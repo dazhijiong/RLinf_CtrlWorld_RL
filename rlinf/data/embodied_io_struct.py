@@ -427,6 +427,38 @@ class Trajectory:
                 f"Reference tensor length {ref_tensor.shape[0]} < traj_len {traj_len}"
             )
 
+    @staticmethod
+    def _align_field_to_traj_len(
+        ref_tensor: torch.Tensor | None, traj_len: int
+    ) -> torch.Tensor | None:
+        """Align per-step fields to the action trajectory length.
+
+        Some fields such as ``terminations`` / ``truncations`` / ``dones`` store one
+        extra bootstrap entry for each rollout epoch, so their first dimension can be
+        ``traj_len + rollout_epoch``. For success-only filtering we need a view aligned
+        with the action steps.
+        """
+        if ref_tensor is None:
+            return None
+        if ref_tensor.shape[0] == traj_len:
+            return ref_tensor
+        if ref_tensor.shape[0] < traj_len:
+            raise ValueError(
+                f"Reference tensor length {ref_tensor.shape[0]} < traj_len {traj_len}"
+            )
+
+        extra = int(ref_tensor.shape[0] - traj_len)
+        assert extra > 0 and traj_len % extra == 0, (
+            f"Cannot align field of length {ref_tensor.shape[0]} to traj_len {traj_len}"
+        )
+        epoch_len = traj_len // extra
+        aligned_chunks = []
+        for epoch_idx in range(extra):
+            start = epoch_idx * (epoch_len + 1) + 1
+            end = start + epoch_len
+            aligned_chunks.append(ref_tensor[start:end])
+        return torch.cat(aligned_chunks, dim=0)
+
     def extract_intervene_traj(self, mode="any"):
         if self.intervene_flags is None or (~self.intervene_flags).all():
             return None
@@ -488,6 +520,85 @@ class Trajectory:
                     dones=dones,
                     prev_logprobs=prev_logprobs,
                     prev_values=prev_values,
+                    forward_inputs=forward_inputs,
+                    curr_obs=curr_obs,
+                    next_obs=next_obs,
+                )
+            )
+
+        return filtered_trajectories if filtered_trajectories else None
+
+    def extract_success_traj(self, truncate_after_first_success: bool = True):
+        """Extract only successful trajectories.
+
+        This is designed for world-model imagined training where we want to retain
+        only episodes whose rollout reaches a success termination. Optionally, the
+        extracted trajectory can be truncated right after the first success step to
+        avoid learning from hallucinated post-success tails.
+        """
+        if self.actions is None:
+            return None
+
+        traj_len = int(self.actions.shape[0])
+        aligned_terminations = self._align_field_to_traj_len(self.terminations, traj_len)
+        aligned_truncations = self._align_field_to_traj_len(self.truncations, traj_len)
+        aligned_dones = self._align_field_to_traj_len(self.dones, traj_len)
+
+        if aligned_terminations is None:
+            return None
+
+        def apply_prefix_mask(tensor, i, keep_mask):
+            return (
+                tensor[:, i][keep_mask].unsqueeze(1) if tensor is not None else None
+            )
+
+        def apply_prefix_mask_to_dict(d, i, keep_mask):
+            return (
+                {k: v[:, i][keep_mask].unsqueeze(1) for k, v in d.items()} if d else {}
+            )
+
+        filtered_trajectories = []
+        batch_size = self.actions.shape[1]
+        for i in range(batch_size):
+            term_steps = aligned_terminations[:, i].reshape(traj_len, -1).any(dim=-1)
+            if not term_steps.any():
+                continue
+
+            keep_mask = torch.ones(
+                traj_len, dtype=torch.bool, device=term_steps.device
+            )
+            if truncate_after_first_success:
+                first_success_idx = int(term_steps.to(torch.int64).argmax().item())
+                keep_mask[first_success_idx + 1 :] = False
+
+            actions = apply_prefix_mask(self.actions, i, keep_mask)
+            rewards = apply_prefix_mask(self.rewards, i, keep_mask)
+            prev_logprobs = apply_prefix_mask(self.prev_logprobs, i, keep_mask)
+            prev_values = apply_prefix_mask(self.prev_values, i, keep_mask)
+            intervene_flags = apply_prefix_mask(self.intervene_flags, i, keep_mask)
+            versions = apply_prefix_mask(self.versions, i, keep_mask)
+
+            forward_inputs = apply_prefix_mask_to_dict(self.forward_inputs, i, keep_mask)
+            curr_obs = apply_prefix_mask_to_dict(self.curr_obs, i, keep_mask)
+            next_obs = apply_prefix_mask_to_dict(self.next_obs, i, keep_mask)
+
+            terminations = apply_prefix_mask(aligned_terminations, i, keep_mask)
+            truncations = apply_prefix_mask(aligned_truncations, i, keep_mask)
+            dones = apply_prefix_mask(aligned_dones, i, keep_mask)
+
+            filtered_trajectories.append(
+                Trajectory(
+                    max_episode_length=self.max_episode_length,
+                    model_weights_id=self.model_weights_id,
+                    actions=actions,
+                    intervene_flags=intervene_flags,
+                    rewards=rewards,
+                    terminations=terminations,
+                    truncations=truncations,
+                    dones=dones,
+                    prev_logprobs=prev_logprobs,
+                    prev_values=prev_values,
+                    versions=versions,
                     forward_inputs=forward_inputs,
                     curr_obs=curr_obs,
                     next_obs=next_obs,

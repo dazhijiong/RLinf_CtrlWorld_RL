@@ -70,6 +70,26 @@ class EmbodiedDAGGERFSDPPolicy(EmbodiedFSDPActor):
             ),
         )
 
+    def _extract_training_trajectories(self, traj: Trajectory):
+        """Select which rollout trajectories are stored for supervised updates."""
+        dagger_cfg = self.cfg.algorithm.get("dagger", {})
+        trajectory_filter = dagger_cfg.get("trajectory_filter", "intervene")
+
+        if trajectory_filter == "success":
+            truncate_after_first_success = dagger_cfg.get(
+                "truncate_after_first_success", True
+            )
+            return traj.extract_success_traj(
+                truncate_after_first_success=truncate_after_first_success
+            )
+        if trajectory_filter == "intervene":
+            return traj.extract_intervene_traj(mode="all")
+
+        raise ValueError(
+            f"Unsupported dagger.trajectory_filter: {trajectory_filter}. "
+            "Expected one of ['intervene', 'success']."
+        )
+
     async def recv_rollout_trajectories(self, input_channel: Channel) -> None:
         clear_memory(sync=False)
 
@@ -85,7 +105,7 @@ class EmbodiedDAGGERFSDPPolicy(EmbodiedFSDPActor):
         intervene_traj_list = []
         for traj in recv_list:
             assert isinstance(traj, Trajectory)
-            intervene_trajs = traj.extract_intervene_traj(mode="all")
+            intervene_trajs = self._extract_training_trajectories(traj)
             if intervene_trajs is not None:
                 intervene_traj_list.extend(intervene_trajs)
         if intervene_traj_list:
