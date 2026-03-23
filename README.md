@@ -234,6 +234,27 @@ Multiple Backend Integrations
 
 **SOTA RL Training Reproduction:** RLinf provides end-to-end recipes that reproduce or match **state-of-the-art (SOTA) RL results** out of the box—users can directly run our configs and scripts to obtain SOTA performance without custom engineering. Check out our [example gallery](https://rlinf.readthedocs.io/en/latest/rst_source/examples/index.html) for more details.
 
+## Key Innovations in This Fork
+
+Compared with the upstream RLinf project, this fork extends RLinf with a full Ctrl-World-based VLA post-training stack rather than a single environment binding.
+
+- End-to-end Ctrl-World integration. This fork adds a complete Ctrl-World world-model route to RLinf, including environment registration, world-model wrapper, action-space conversion, reward-model hookup, training configs, evaluation configs, and cluster launch scripts.
+- Data and tooling for reproducibility. This fork adds the dataset wrappers and conversion utilities needed to start Ctrl-World rollouts from LeRobot-style data and to reproduce experiments with standalone parameter YAMLs and `sbatch` launchers.
+- A new post-training route beyond the default GRPO pipeline. In addition to the GRPO-based imagined rollout setup, this fork introduces a success-only FM path for OpenPI/Pi0.5, where only successful imagined trajectories are retained for policy updates.
+- Drift-aware trajectory filtering. Successful imagined trajectories can be truncated at the first success step so the policy is updated with the useful prefix while reducing post-success hallucination drift from long-horizon imagined rollouts.
+- Native OpenPI FM objective reuse. Instead of adding a new ad-hoc RL loss, this fork reuses RLinf's embodied DAgger path and OpenPI's native SFT/FM objective to continue training the policy on successful imagined data.
+
+The main entry points for these fork-specific changes are:
+
+- `examples/embodiment/config/env/ctrl_world_libero_spatial.yaml`
+- `examples/embodiment/config/ctrl_world_libero_spatial_grpo_openpi_pi05.yaml`
+- `examples/embodiment/config/ctrl_world_libero_spatial_success_fm_openpi_pi05.yaml`
+- `examples/embodiment/config/experiment/ctrl_world_success_fm_pi05.yaml`
+- `examples/embodiment/ctrl_world_pi05_success_fm_sbatch.sh`
+- `rlinf/envs/world_model/world_model_ctrl_world_env.py`
+- `rlinf/data/embodied_io_struct.py`
+- `rlinf/workers/actor/fsdp_dagger_policy_worker.py`
+
 
 ## Awesome Community Projects with RLinf
 We are excited to see a growing ecosystem of projects building on top of or integrate with RLinf, spanning embodied AI, robotics, and long-horizon agentic systems. Here are some awesome community projects:

@@ -230,6 +230,27 @@ RLinf具有高度灵活性，可支持多种强化学习训练工作流（PPO、
 
 **SOTA RL 训练复现：** RLinf 提供了端到端的配置和脚本，可以直接运行，无需额外工程改造，即可复现业界领先的训练效果。请参考[示例库](https://rlinf.readthedocs.io/zh-cn/latest/rst_source/examples/index.html)了解更多细节。
 
+## 本项目的技术创新点
+
+相较于上游 RLinf，本项目并不是只增加了一个 `Ctrl-World` 环境接口，而是把一整条基于 `Ctrl-World` 的 VLA 后训练技术路线接入到了 RLinf 中。
+
+- 完整接入 Ctrl-World 技术栈。新增了 `Ctrl-World` world-model 环境、环境注册、动作空间桥接、奖励模型接入、训练配置、评测配置以及集群启动脚本，使其能够在 RLinf 中作为一条可训练、可评测、可复现实验的完整路线运行。
+- 补齐了数据与实验工具链。新增了面向 LeRobot 风格数据的初始化/包装逻辑，以及数据转换脚本、独立参数 YAML 和 `sbatch` 启动脚本，降低了 Ctrl-World 实验复现和迁移的成本。
+- 在默认 GRPO 路线之外新增了 success-only FM 路线。除了 imagined rollout + GRPO 的训练方式，本项目进一步实现了面向 OpenPI/Pi0.5 的 success-only FM 后训练，只使用世界模型中成功的 imagined trajectories 来继续优化策略。
+- 面向 world-model drift 的轨迹过滤。成功 imagined trajectory 支持在首次成功后截断，从而尽量保留有效决策前缀，同时减少长时程 imagined rollout 中 post-success hallucination drift 对训练的误导。
+- 复用 OpenPI 原生 FM 目标而非额外设计经验性 loss。本项目通过复用 RLinf 的 embodied DAgger 路径和 OpenPI 原生 SFT/FM 目标，在成功 imagined 数据上继续优化策略，而不是重新引入一套额外的启发式 RL loss。
+
+这部分 fork 专属改动的主要入口文件是：
+
+- `examples/embodiment/config/env/ctrl_world_libero_spatial.yaml`
+- `examples/embodiment/config/ctrl_world_libero_spatial_grpo_openpi_pi05.yaml`
+- `examples/embodiment/config/ctrl_world_libero_spatial_success_fm_openpi_pi05.yaml`
+- `examples/embodiment/config/experiment/ctrl_world_success_fm_pi05.yaml`
+- `examples/embodiment/ctrl_world_pi05_success_fm_sbatch.sh`
+- `rlinf/envs/world_model/world_model_ctrl_world_env.py`
+- `rlinf/data/embodied_io_struct.py`
+- `rlinf/workers/actor/fsdp_dagger_policy_worker.py`
+
 
 ## 基于 RLinf 的社区项目精选
 我们非常高兴地看到围绕RLinf构建或集成的项目生态系统正在蓬勃发展，涵盖具身智能、机器人技术以及长时序代理系统等领域。以下是一些优秀的社区项目：
