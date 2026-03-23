@@ -1,0 +1,7 @@
+# Additional dependencies for Ctrl-World world-model integration.
+# Keep this lightweight to avoid forcing major version overrides.
+decord==0.6.0
+einops
+scipy
+pandas
+mediapy

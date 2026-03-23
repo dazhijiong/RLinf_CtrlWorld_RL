@@ -91,6 +91,43 @@ class Cluster:
         ClusterEnvVar.COMM_NET_DEVICES: None,
         ClusterEnvVar.EXT_MODULE: None,
     }
+    RUNTIME_ENV_EXCLUDED_KEY_PREFIXES = (
+        "BASH_FUNC_",
+        "EBDEVEL",
+        "EBROOT",
+        "__LMOD_",
+        "_LMFILES_",
+        "_ModuleTable",
+        "LMOD_",
+    )
+    RUNTIME_ENV_EXCLUDED_KEYS = {
+        "ACLOCAL_PATH",
+        "CMAKE_LIBRARY_PATH",
+        "CMAKE_PREFIX_PATH",
+        "CPATH",
+        "C_INCLUDE_PATH",
+        "CPLUS_INCLUDE_PATH",
+        "INFOPATH",
+        "LIBRARY_PATH",
+        "LOADEDMODULES",
+        "MANPATH",
+        "MODULEPATH",
+        "PKG_CONFIG_PATH",
+        "which_declare",
+    }
+    RUNTIME_ENV_ALWAYS_KEEP_KEYS = {
+        "CUDA_VISIBLE_DEVICES",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LD_LIBRARY_PATH",
+        "PATH",
+        "PYTHONPATH",
+        "SHELL",
+        "USER",
+    }
+    DEFAULT_RUNTIME_ENV_MAX_ENTRY_BYTES = 65536
+    DEFAULT_RUNTIME_ENV_MAX_TOTAL_BYTES = 131072
 
     class NamespaceConflictError(Exception):
         """Raised when there is a namespace conflict in Ray initialization."""
@@ -491,6 +528,11 @@ class Cluster:
         merged_env_vars.update(cfg_node_env_vars)
         # Finally, update with worker-specified env vars
         merged_env_vars.update(env_vars)
+        merged_env_vars = self._sanitize_runtime_env_vars(
+            merged_env_vars,
+            worker_name=worker_name,
+            prioritized_keys=set(cfg_node_env_vars.keys()) | set(env_vars.keys()),
+        )
 
         # Update Python interpreter path
         python_interpreter_path = node.python_interpreter_path
@@ -523,3 +565,103 @@ class Cluster:
                 actor_handle=actor,
             )
         return actor
+
+    def _sanitize_runtime_env_vars(
+        self,
+        env_vars: dict[str, str],
+        worker_name: str,
+        prioritized_keys: Optional[set[str]] = None,
+    ) -> dict[str, str]:
+        """Filter unsafe/oversized runtime env vars before passing to Ray."""
+
+        def _parse_positive_env_var(env_name: str, default: int) -> int:
+            value = os.getenv(env_name)
+            if value is None:
+                return default
+            try:
+                parsed = int(value)
+                if parsed <= 0:
+                    raise ValueError
+                return parsed
+            except ValueError:
+                self._logger.warning(
+                    f"Invalid {env_name}={value}; expected a positive integer. Falling back to {default}."
+                )
+                return default
+
+        max_entry_bytes = _parse_positive_env_var(
+            "RLINF_RUNTIME_ENV_MAX_ENTRY_BYTES",
+            Cluster.DEFAULT_RUNTIME_ENV_MAX_ENTRY_BYTES,
+        )
+        max_total_bytes = _parse_positive_env_var(
+            "RLINF_RUNTIME_ENV_MAX_TOTAL_BYTES",
+            Cluster.DEFAULT_RUNTIME_ENV_MAX_TOTAL_BYTES,
+        )
+        prioritized_keys = (prioritized_keys or set()) | set(
+            Cluster.RUNTIME_ENV_ALWAYS_KEEP_KEYS
+        )
+
+        # Keep user/config-overridden env vars first so they survive payload truncation.
+        prioritized_items = []
+        regular_items = []
+        for key, value in env_vars.items():
+            if key in prioritized_keys:
+                prioritized_items.append((key, value))
+            else:
+                regular_items.append((key, value))
+
+        filtered_env_vars: dict[str, str] = {}
+        filtered_by_prefix: list[str] = []
+        filtered_by_entry_size: list[str] = []
+        filtered_by_total_size: list[str] = []
+        current_total_bytes = 0
+
+        for key, value in prioritized_items + regular_items:
+            if (
+                key not in prioritized_keys
+                and key.startswith(Cluster.RUNTIME_ENV_EXCLUDED_KEY_PREFIXES)
+            ):
+                filtered_by_prefix.append(key)
+                continue
+            if (
+                key not in prioritized_keys
+                and key in Cluster.RUNTIME_ENV_EXCLUDED_KEYS
+            ):
+                filtered_by_prefix.append(key)
+                continue
+
+            value = value if isinstance(value, str) else str(value)
+            entry_size = len(key.encode("utf-8")) + len(value.encode("utf-8"))
+            if entry_size > max_entry_bytes:
+                filtered_by_entry_size.append(key)
+                continue
+            if current_total_bytes + entry_size > max_total_bytes:
+                filtered_by_total_size.append(key)
+                continue
+
+            filtered_env_vars[key] = value
+            current_total_bytes += entry_size
+
+        if filtered_by_prefix or filtered_by_entry_size or filtered_by_total_size:
+            dropped_count = (
+                len(filtered_by_prefix)
+                + len(filtered_by_entry_size)
+                + len(filtered_by_total_size)
+            )
+            sample_keys = (
+                filtered_by_prefix + filtered_by_entry_size + filtered_by_total_size
+            )[:5]
+            self._logger.warning(
+                "Trimmed %d runtime env vars for worker '%s' (remaining=%d vars, ~%d bytes). "
+                "Dropped by prefix=%d, entry size=%d, total size=%d. Sample keys: %s",
+                dropped_count,
+                worker_name,
+                len(filtered_env_vars),
+                current_total_bytes,
+                len(filtered_by_prefix),
+                len(filtered_by_entry_size),
+                len(filtered_by_total_size),
+                sample_keys,
+            )
+
+        return filtered_env_vars

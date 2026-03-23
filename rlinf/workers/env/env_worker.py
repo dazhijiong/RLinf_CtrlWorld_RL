@@ -253,6 +253,42 @@ class EnvWorker(Worker):
             if self.enable_offload and hasattr(self.env_list[i], "offload"):
                 self.env_list[i].offload()
 
+    @staticmethod
+    def _to_cpu_if_possible(value: Any) -> Any:
+        return value.cpu() if hasattr(value, "cpu") else value
+
+    @staticmethod
+    def _slice_metric_by_done_mask(value: Any, done_mask: torch.Tensor) -> Any:
+        if torch.is_tensor(value) and value.ndim > 0 and value.shape[0] == done_mask.shape[0]:
+            return value[done_mask]
+        if (
+            isinstance(value, np.ndarray)
+            and value.ndim > 0
+            and value.shape[0] == done_mask.shape[0]
+        ):
+            return value[done_mask.cpu().numpy()]
+        return value
+
+    def _collect_episode_metrics(
+        self,
+        env_info: dict[str, Any],
+        infos: Any,
+        done_mask: torch.Tensor | None = None,
+    ) -> None:
+        if not isinstance(infos, dict):
+            return
+        episode_info = infos.get("episode")
+        if not isinstance(episode_info, dict):
+            return
+
+        for key, value in episode_info.items():
+            metric = (
+                self._slice_metric_by_done_mask(value, done_mask)
+                if done_mask is not None
+                else value
+            )
+            env_info[key] = self._to_cpu_if_possible(metric)
+
     @Worker.timer("env_interact_step")
     def env_interact_step(
         self, chunk_actions: torch.Tensor, stage_id: int
@@ -276,34 +312,33 @@ class EnvWorker(Worker):
         )
         if isinstance(obs_list, (list, tuple)):
             extracted_obs = obs_list[-1] if obs_list else None
-        if isinstance(infos_list, (list, tuple)):
-            infos = infos_list[-1] if infos_list else None
+        infos = infos_list[-1] if isinstance(infos_list, (list, tuple)) and infos_list else {}
+        if infos is None:
+            infos = {}
         chunk_dones = torch.logical_or(chunk_terminations, chunk_truncations)
         if not self.cfg.env.train.auto_reset:
             if self.cfg.env.train.ignore_terminations:
                 if chunk_truncations[:, -1].any():
                     assert chunk_truncations[:, -1].all()
-                    if "episode" in infos:
-                        for key in infos["episode"]:
-                            env_info[key] = infos["episode"][key].cpu()
+                    self._collect_episode_metrics(env_info, infos)
             else:
-                if "episode" in infos:
-                    for key in infos["episode"]:
-                        env_info[key] = infos["episode"][key].cpu()
+                self._collect_episode_metrics(env_info, infos)
         elif chunk_dones.any():
-            if "final_info" in infos:
-                final_info = infos["final_info"]
-                for key in final_info["episode"]:
-                    env_info[key] = final_info["episode"][key][chunk_dones[:, -1]].cpu()
+            done_mask = chunk_dones[:, -1]
+            self._collect_episode_metrics(env_info, infos, done_mask=done_mask)
+            self._collect_episode_metrics(
+                env_info, infos.get("final_info"), done_mask=done_mask
+            )
 
         intervene_actions = (
             infos["intervene_action"] if "intervene_action" in infos else None
         )
         intervene_flags = infos["intervene_flag"] if "intervene_flag" in infos else None
         if self.cfg.env.train.auto_reset and chunk_dones.any():
-            if "intervene_action" in infos["final_info"]:
-                intervene_actions = infos["final_info"]["intervene_action"]
-                intervene_flags = infos["final_info"]["intervene_flag"]
+            final_info = infos.get("final_info")
+            if isinstance(final_info, dict) and "intervene_action" in final_info:
+                intervene_actions = final_info["intervene_action"]
+                intervene_flags = final_info["intervene_flag"]
 
         env_output = EnvOutput(
             obs=extracted_obs,
@@ -341,18 +376,17 @@ class EnvWorker(Worker):
         )
         if isinstance(obs_list, (list, tuple)):
             extracted_obs = obs_list[-1] if obs_list else None
-        if isinstance(infos_list, (list, tuple)):
-            infos = infos_list[-1] if infos_list else None
+        infos = infos_list[-1] if isinstance(infos_list, (list, tuple)) and infos_list else {}
+        if infos is None:
+            infos = {}
         chunk_dones = torch.logical_or(chunk_terminations, chunk_truncations)
 
         if chunk_dones.any():
-            if "episode" in infos:
-                for key in infos["episode"]:
-                    env_info[key] = infos["episode"][key].cpu()
-            if "final_info" in infos:
-                final_info = infos["final_info"]
-                for key in final_info["episode"]:
-                    env_info[key] = final_info["episode"][key][chunk_dones[:, -1]].cpu()
+            done_mask = chunk_dones[:, -1]
+            self._collect_episode_metrics(env_info, infos, done_mask=done_mask)
+            self._collect_episode_metrics(
+                env_info, infos.get("final_info"), done_mask=done_mask
+            )
 
         env_output = EnvOutput(
             obs=extracted_obs,

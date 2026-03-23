@@ -18,7 +18,7 @@ NO_ROOT=0
 NO_INSTALL_RLINF_CMD="--no-install-project"
 SUPPORTED_TARGETS=("embodied" "agentic" "docs")
 SUPPORTED_MODELS=("openvla" "openvla-oft" "openpi" "gr00t" "dexbotic" "lingbotvla")
-SUPPORTED_ENVS=("behavior" "maniskill_libero" "metaworld" "calvin" "isaaclab" "robocasa" "franka" "frankasim" "robotwin" "habitat" "opensora" "wan" "xsquare_turtle2" "liberopro" "liberoplus")
+SUPPORTED_ENVS=("behavior" "maniskill_libero" "metaworld" "calvin" "isaaclab" "robocasa" "franka" "frankasim" "robotwin" "habitat" "opensora" "wan" "xsquare_turtle2" "liberopro" "liberoplus" "ctrl_world")
 
 #=======================Utility Functions=======================
 
@@ -438,6 +438,14 @@ install_openvla_oft_model() {
             install_liberoplus_env
             install_flash_attn
             uv pip install git+${GITHUB_PREFIX}https://github.com/moojink/openvla-oft.git  --no-build-isolation
+            ;;
+        ctrl_world)
+            create_and_sync_venv
+            install_common_embodied_deps
+            install_maniskill_libero_env
+            install_ctrl_world_model
+            install_flash_attn
+            uv pip install git+${GITHUB_PREFIX}https://github.com/moojink/openvla-oft.git
             ;;
         *)
             echo "Environment '$ENV_NAME' is not supported for OpenVLA-OFT model." >&2
@@ -866,6 +874,17 @@ install_wan_world_model() {
     wan_dir=$(clone_or_reuse_repo WAN_PATH "$VENV_DIR/wan" https://github.com/RLinf/diffsynth-studio.git)
     uv pip install -e "$wan_dir"
     uv pip install -r $SCRIPT_DIR/embodied/models/wan.txt
+}
+
+install_ctrl_world_model() {
+    local ctrl_world_dir
+    ctrl_world_dir=$(clone_or_reuse_repo CTRL_WORLD_PATH "$VENV_DIR/Ctrl-World" https://github.com/Robert-gyj/Ctrl-World.git)
+    local diffsynth_dir
+    diffsynth_dir=$(clone_or_reuse_repo WAN_PATH "$VENV_DIR/wan" https://github.com/RLinf/diffsynth-studio.git)
+    uv pip install -e "$diffsynth_dir"
+    uv pip install -r $SCRIPT_DIR/embodied/models/ctrl_world.txt
+    # Ensure Ctrl-World modules are importable by RLinf world-model envs.
+    echo "export CTRL_WORLD_PATH=$(realpath "$ctrl_world_dir")" >> "$VENV_DIR/bin/activate"
 }
 
 #=======================AGENTIC INSTALLER=======================

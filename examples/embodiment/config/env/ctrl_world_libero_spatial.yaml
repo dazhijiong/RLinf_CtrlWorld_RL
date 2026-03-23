@@ -1,0 +1,88 @@
+env_type: ctrl_world_wm
+task_suite_name: libero_spatial
+wm_env_type: libero
+
+total_num_envs: null
+
+auto_reset: False
+ignore_terminations: False
+max_steps_per_rollout_epoch: 240
+max_episode_steps: 240
+
+use_rel_reward: True
+reward_coef: 1.0
+
+# RLinf LiberoEnv style settings
+reset_gripper_open: True
+is_eval: False
+
+seed: 0
+group_size: 1
+use_fixed_reset_state_ids: True
+use_ordered_reset_state_ids: False
+
+specific_reset_id: null
+
+video_cfg:
+  save_video: True
+  info_on_video: True
+  fps: 7
+  video_base_dir: ${runner.logger.log_path}/video/train
+
+enable_offload: False
+
+###  ------------------Ctrl-World paths ------------------
+
+# Path to Ctrl-World repository root (contains models/ and scripts/)
+ctrl_world_repo_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World"
+
+# World-model assets
+ctrl_world_ckpt_path: "${env.train.ctrl_world_repo_path}/model_ckpt/doird_subset/checkpoint-20000.pt"
+ctrl_world_svd_model_path: "${env.train.ctrl_world_repo_path}/pretrained/stable-video-diffusion-img2vid"
+ctrl_world_clip_model_path: "${env.train.ctrl_world_repo_path}/pretrained/clip-vit-base-patch32"
+ctrl_world_stat_path: "${env.train.ctrl_world_repo_path}/dataset_meta_info/droid/stat.json"
+
+# Initial reset-state dataset for RLinf world-model rollout.
+initial_image_dataset_type: "lerobot"
+initial_image_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/datasets/lerobot_libero_spatial_image"
+
+# Reward model checkpoint path (same usage style as wan env)
+ctrl_world_reward_model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/RLinf-OpenSora-LIBERO-Spatial/resnet_rm.pth"
+
+ctrl_world_cfg:
+  # Inference dtype
+  dtype: bf16
+
+  # Ctrl-World repo and checkpoints
+  ctrl_world_repo_path: ${env.train.ctrl_world_repo_path}
+  ckpt_path: ${env.train.ctrl_world_ckpt_path}
+  svd_model_path: ${env.train.ctrl_world_svd_model_path}
+  clip_model_path: ${env.train.ctrl_world_clip_model_path}
+  data_stat_path: ${env.train.ctrl_world_stat_path}
+
+  # Rollout settings
+  chunk: 5
+  condition_frame_length: 1
+  num_history: 6
+  action_dim: 7
+  policy_action_type: absolute_eef
+  policy_gripper_type: passthrough
+
+  # Image settings (single view); Ctrl-World internally uses 3x vertically concatenated views
+  image_size: [192, 320]
+  main_view_index: 1
+  wrist_view_index: 2
+
+  # Diffusion inference
+  num_inference_steps: 50
+  decode_chunk_size: 12
+  guidance_scale: 1.0
+  fps: 7
+  motion_bucket_id: 127
+  text_cond: True
+  frame_level_cond: True
+  his_cond_zero: False
+
+  reward_model:
+    type: ResnetRewModel
+    from_pretrained: ${env.train.ctrl_world_reward_model_path}

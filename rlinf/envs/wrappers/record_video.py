@@ -74,8 +74,11 @@ class RecordVideo(gym.Wrapper):
 
         self.video_cfg = video_cfg
         self.render_images: list[np.ndarray] = []
+        self.success_images: list[tuple[np.ndarray, int, int, int, str]] = []
         self.video_cnt = 0
+        self.success_image_cnt = 0
         self._num_envs = getattr(env, "num_envs", 1)
+        self._success_once_state = np.zeros(self._num_envs, dtype=bool)
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._save_futures: list[Future] = []
 
@@ -215,6 +218,63 @@ class RecordVideo(gym.Wrapper):
                 return value[0]
         return value
 
+    def _to_bool_array(self, value: Any) -> Optional[np.ndarray]:
+        """Convert a scalar/list/tensor metric into a per-env boolean array."""
+        if value is None:
+            return None
+
+        if torch is not None and isinstance(value, torch.Tensor):
+            value = value.detach().cpu().numpy()
+
+        if isinstance(value, np.ndarray):
+            if value.shape == ():
+                return np.full(self._num_envs, bool(value.item()), dtype=bool)
+            flat = value.astype(bool).reshape(-1)
+        elif isinstance(value, (list, tuple)):
+            if len(value) == 0:
+                return None
+            flat = np.asarray(value, dtype=bool).reshape(-1)
+        else:
+            return np.full(self._num_envs, bool(value), dtype=bool)
+
+        if flat.size == 1:
+            return np.full(self._num_envs, bool(flat[0]), dtype=bool)
+        if flat.size < self._num_envs:
+            return None
+        return flat[: self._num_envs].astype(bool, copy=False)
+
+    def _extract_episode_metric(self, info: Any, key: str) -> Any:
+        """Extract an episode metric, preferring final_info for done envs."""
+        if not isinstance(info, dict):
+            return None
+
+        value = None
+        episode = info.get("episode")
+        if isinstance(episode, dict) and key in episode:
+            value = episode[key]
+        elif key in info:
+            value = info[key]
+
+        final_info = info.get("final_info")
+        final_mask = self._to_bool_array(info.get("_final_info"))
+        if isinstance(final_info, dict) and final_mask is not None and final_mask.any():
+            final_value = None
+            final_episode = final_info.get("episode")
+            if isinstance(final_episode, dict) and key in final_episode:
+                final_value = final_episode[key]
+            elif key in final_info:
+                final_value = final_info[key]
+
+            final_value = self._to_bool_array(final_value)
+            if final_value is not None:
+                merged = self._to_bool_array(value)
+                if merged is None:
+                    merged = np.zeros(self._num_envs, dtype=bool)
+                merged[final_mask] = final_value[final_mask]
+                return merged
+
+        return value
+
     def _get_task_description(self, obs: Any, env_id: int):
         """Get task description from obs or env attribute."""
         if isinstance(obs, dict) and "task_descriptions" in obs:
@@ -252,9 +312,28 @@ class RecordVideo(gym.Wrapper):
         value = info
         for part in key.split("."):
             if not isinstance(value, dict) or part not in value:
+                value = None
+                break
+            value = value[part]
+        if value is not None:
+            return value
+
+        final_info = info.get("final_info")
+        if not isinstance(final_info, dict):
+            return None
+        if key in final_info:
+            return final_info[key]
+
+        value = final_info
+        for part in key.split("."):
+            if not isinstance(value, dict) or part not in value:
                 return None
             value = value[part]
         return value
+
+    def _get_info_value(self, info: Any, key: str) -> Any:
+        """Get an auxiliary info payload, preferring top-level info then final_info."""
+        return self._lookup_info_value(info, key)
 
     def _build_info_item(
         self,
@@ -263,6 +342,7 @@ class RecordVideo(gym.Wrapper):
         terminations: Optional[Any],
         env_id: int,
         time_idx: Optional[int] = None,
+        num_frames: Optional[int] = None,
     ) -> dict:
         """Build a per-env info dict for overlay."""
         info_item: dict[str, Any] = {}
@@ -270,15 +350,29 @@ class RecordVideo(gym.Wrapper):
         if rewards is not None:
             value = self._value_for_env(rewards, env_id)
             if time_idx is not None and isinstance(value, (np.ndarray, list, tuple)):
-                if len(value) > time_idx:
-                    value = value[time_idx]
+                value_len = len(value)
+                if value_len > 0:
+                    # If only one rendered frame represents a whole chunk, show the
+                    # last reward in that chunk instead of the first one.
+                    effective_idx = time_idx
+                    if num_frames == 1 and value_len > 1:
+                        effective_idx = value_len - 1
+                    elif effective_idx >= value_len:
+                        effective_idx = value_len - 1
+                    value = value[effective_idx]
             info_item["reward"] = float(value) if value is not None else value
 
         if terminations is not None:
             value = self._value_for_env(terminations, env_id)
             if time_idx is not None and isinstance(value, (np.ndarray, list, tuple)):
-                if len(value) > time_idx:
-                    value = value[time_idx]
+                value_len = len(value)
+                if value_len > 0:
+                    effective_idx = time_idx
+                    if num_frames == 1 and value_len > 1:
+                        effective_idx = value_len - 1
+                    elif effective_idx >= value_len:
+                        effective_idx = value_len - 1
+                    value = value[effective_idx]
             info_item["termination"] = bool(value) if value is not None else value
 
         if infos is not None:
@@ -301,6 +395,101 @@ class RecordVideo(gym.Wrapper):
 
         return info_item
 
+    def _extract_done_mask(self, info: Any) -> Optional[np.ndarray]:
+        """Get done mask attached to final_info/final_observation."""
+        if not isinstance(info, dict):
+            return None
+        return self._to_bool_array(info.get("_final_info"))
+
+    def _capture_success_frames(
+        self,
+        images: list[np.ndarray],
+        infos: Optional[Any],
+        rewards: Optional[Any],
+        terminations: Optional[Any],
+        time_idx: Optional[int] = None,
+        total_frame_count: Optional[int] = None,
+    ) -> None:
+        """Save the first frame where success_once becomes true for each env."""
+        if not self.video_cfg.get("save_success_frame", False) or infos is None:
+            return
+
+        success_once = self._to_bool_array(self._extract_episode_metric(infos, "success_once"))
+        if success_once is None:
+            return
+
+        new_success = success_once & ~self._success_once_state
+        for env_id in np.flatnonzero(new_success):
+            if env_id >= len(images):
+                continue
+            success_frame_images = self._get_info_value(infos, "success_frame_images")
+            success_frame_wrist_images = self._get_info_value(infos, "success_frame_wrist_images")
+            success_frame_time_idx = self._get_info_value(infos, "success_frame_time_idx")
+            selected_time_idx = self._value_for_env(success_frame_time_idx, env_id)
+            frame_value = self._value_for_env(success_frame_images, env_id)
+            if frame_value is not None:
+                frame = self._to_numpy(frame_value)
+                if frame.dtype != np.uint8:
+                    frame = frame.astype(np.uint8)
+                frame = frame.copy()
+            else:
+                frame = images[env_id].copy()
+            if self.video_cfg.get("info_on_video", True):
+                task_desc = self._get_task_description(infos, env_id)
+                extras = [f"task: {task_desc}"] if task_desc else None
+                frame = put_info_on_image(
+                    frame,
+                    self._build_info_item(
+                        infos,
+                        rewards,
+                        terminations,
+                        env_id,
+                        selected_time_idx if selected_time_idx is not None else time_idx,
+                        num_frames=total_frame_count,
+                    ),
+                    extras=extras,
+                )
+            self.success_images.append(
+                (frame, self.video_cnt, env_id, self.success_image_cnt, "main")
+            )
+            wrist_frame_value = self._value_for_env(success_frame_wrist_images, env_id)
+            if wrist_frame_value is not None:
+                wrist_frame = self._to_numpy(wrist_frame_value)
+                if wrist_frame.dtype != np.uint8:
+                    wrist_frame = wrist_frame.astype(np.uint8)
+                wrist_frame = wrist_frame.copy()
+                if self.video_cfg.get("info_on_video", True):
+                    task_desc = self._get_task_description(infos, env_id)
+                    extras = [f"task: {task_desc}"] if task_desc else None
+                    wrist_frame = put_info_on_image(
+                        wrist_frame,
+                        self._build_info_item(
+                            infos,
+                            rewards,
+                            terminations,
+                            env_id,
+                            selected_time_idx if selected_time_idx is not None else time_idx,
+                            num_frames=total_frame_count,
+                        ),
+                        extras=extras,
+                    )
+                self.success_images.append(
+                    (
+                        wrist_frame,
+                        self.video_cnt,
+                        env_id,
+                        self.success_image_cnt,
+                        "wrist",
+                    )
+                )
+            self.success_image_cnt += 1
+
+        next_state = success_once.copy()
+        done_mask = self._extract_done_mask(infos)
+        if done_mask is not None:
+            next_state[done_mask] = False
+        self._success_once_state = next_state
+
     def _append_frame(
         self,
         images: list[np.ndarray],
@@ -308,20 +497,39 @@ class RecordVideo(gym.Wrapper):
         rewards: Optional[Any],
         terminations: Optional[Any],
         time_idx: Optional[int] = None,
+        total_frame_count: Optional[int] = None,
     ) -> None:
         """Overlay info (optional) and append a tiled frame."""
         if not images:
             return
+        self._capture_success_frames(
+            images,
+            infos,
+            rewards,
+            terminations,
+            time_idx,
+            total_frame_count=total_frame_count,
+        )
         if self.video_cfg.get("info_on_video", True):
-            images = [
-                put_info_on_image(
-                    img,
-                    self._build_info_item(
-                        infos, rewards, terminations, env_id, time_idx
-                    ),
+            rendered_images = []
+            for env_id, img in enumerate(images):
+                task_desc = self._get_task_description(infos, env_id)
+                extras = [f"task: {task_desc}"] if task_desc else None
+                rendered_images.append(
+                    put_info_on_image(
+                        img,
+                        self._build_info_item(
+                            infos,
+                            rewards,
+                            terminations,
+                            env_id,
+                            time_idx,
+                            num_frames=total_frame_count,
+                        ),
+                        extras=extras,
+                    )
                 )
-                for env_id, img in enumerate(images)
-            ]
+            images = rendered_images
         if len(images) > 1:
             nrows = int(np.sqrt(len(images)))
             full_image = tile_images(images, nrows=nrows)
@@ -346,17 +554,34 @@ class RecordVideo(gym.Wrapper):
             return
 
         if isinstance(infos, (list, tuple)):
+            total_frame_count = len(frames)
             for time_idx, images in enumerate(frames):
-                step_info = infos[time_idx] if len(infos) > time_idx else None
-                self._append_frame(images, step_info, rewards, terminations, time_idx)
+                info_item = infos[time_idx] if time_idx < len(infos) else None
+                self._append_frame(
+                    images,
+                    info_item,
+                    rewards,
+                    terminations,
+                    time_idx,
+                    total_frame_count=total_frame_count,
+                )
             return
 
+        total_frame_count = len(frames)
         for time_idx, images in enumerate(frames):
-            self._append_frame(images, infos, rewards, terminations, time_idx)
+            self._append_frame(
+                images,
+                infos,
+                rewards,
+                terminations,
+                time_idx,
+                total_frame_count=total_frame_count,
+            )
 
     def reset(self, *args, **kwargs):
         """Reset env and record the initial frame."""
         obs, info = self.env.reset(*args, **kwargs)
+        self._success_once_state[:] = False
         self.add_new_frames(obs, info)
         return obs, info
 
@@ -419,14 +644,31 @@ class RecordVideo(gym.Wrapper):
         os.makedirs(output_dir, exist_ok=True)
         mp4_path = os.path.join(output_dir, f"{self.video_cnt}.mp4")
         frames = list(self.render_images)
+        success_images = list(self.success_images)
         self.render_images = []
+        self.success_images = []
         self.video_cnt += 1
         self._submit_save(frames, mp4_path)
+        if success_images:
+            success_dir = os.path.join(output_dir, "success_once")
+            os.makedirs(success_dir, exist_ok=True)
+            for image, video_idx, env_id, success_idx, image_kind in success_images:
+                png_path = os.path.join(
+                    success_dir,
+                    f"{video_idx}_env{env_id}_success_once_{success_idx}_{image_kind}.png",
+                )
+                self._submit_save_image(image, png_path)
 
     def _submit_save(self, frames: list[np.ndarray], mp4_path: str) -> None:
         """Submit a background job to save the video."""
         self._prune_futures()
         future = self._executor.submit(self._save_video, frames, mp4_path)
+        self._save_futures.append(future)
+
+    def _submit_save_image(self, image: np.ndarray, png_path: str) -> None:
+        """Submit a background job to save an image."""
+        self._prune_futures()
+        future = self._executor.submit(self._save_image, image, png_path)
         self._save_futures.append(future)
 
     def _save_video(self, frames: list[np.ndarray], mp4_path: str) -> None:
@@ -441,6 +683,13 @@ class RecordVideo(gym.Wrapper):
         finally:
             if video_writer is not None:
                 video_writer.close()
+
+    def _save_image(self, image: np.ndarray, png_path: str) -> None:
+        """Save a success frame to disk (runs in background)."""
+        try:
+            imageio.imwrite(png_path, image)
+        except Exception as exc:
+            warnings.warn(f"Failed to save image {png_path}: {exc}")
 
     def _prune_futures(self) -> None:
         """Remove finished futures to avoid unbounded growth."""

@@ -19,7 +19,10 @@ import os
 import sys
 from typing import Optional, Union
 
-import gym
+try:
+    import gymnasium as gym
+except ImportError:
+    import gym
 import numpy as np
 import torch
 from omegaconf.omegaconf import OmegaConf

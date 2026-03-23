@@ -17,7 +17,10 @@ import warnings
 from multiprocessing import connection
 from typing import Any, Callable, Optional, Union
 
-import gym
+try:
+    import gymnasium as gym
+except ImportError:
+    import gym
 import numpy as np
 
 from rlinf.envs.libero.utils import get_libero_type

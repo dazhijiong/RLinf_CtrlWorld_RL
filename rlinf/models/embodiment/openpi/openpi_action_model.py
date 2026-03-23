@@ -35,6 +35,8 @@ from rlinf.utils.nested_dict_process import copy_dict_tensor
 
 @dataclass(frozen=True)
 class OpenPi0Config(Pi0Config):
+    """OpenPI 在 RL 场景下新增的配置项。"""
+
     # config for rl
     config_name: str = "pi0_libero"  # pi0_libero, pi05_libero, pi0_maniskill, pi05_maniskill, pi0_metaworld, pi05_metaworld
     num_images_in_input: int = 2  # number of images in input
@@ -81,7 +83,15 @@ class OpenPi0Config(Pi0Config):
 
 class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
     """
-    Pi0 model for reinforcement learning action prediction.
+    面向 RL 的 OpenPI 动作策略。
+
+    这个类同时支持两条路径：
+    1. rollout / 推理：根据观测采样动作，并记录 old logprob
+    2. actor 训练：对 rollout 保存下来的采样链重算当前策略下的 logprob
+
+    PPO/GRPO 真正使用的是新旧策略概率比：
+        ratio = exp(logprobs - old_logprobs)
+    因此这里既要能“采样时记旧概率”，也要能“训练时重算新概率”。
     """
 
     config: OpenPi0Config
@@ -125,7 +135,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         self,
         config: OpenPi0Config,
     ):
-        # Override `sample_actions` to prevent parent class polymorphic call
+        # 避免父类初始化阶段通过多态错误调用子类的 sample_actions。
         sample_actions_func = self.sample_actions
         super().__init__(config)
         self.sample_actions = sample_actions_func
@@ -136,12 +146,12 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             "double_layer and joint_logprob can not be set at the same time"
         )
 
-        # rl model init
+        # critic 的输入宽度取决于 value head 接在 VLM 之后还是 action expert 之后。
         if self.config.value_after_vlm:
             proj_width = 2048
         else:
             proj_width = 1024
-        # value head
+        # value head 仅在需要 critic 时启用。
         if self.config.add_value_head:
             if self.config.config_name in ["pi05_maniskill", "pi05_libero"]:
                 value_head_hidden_sizes = (1024, 512, 256)
@@ -158,7 +168,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         self.use_vlm_value = getattr(self.config, "value_after_vlm", False) and getattr(
             self.config, "add_value_head", False
         )
-        # noise head for flow-noise
+        # flow-noise 模式下，方差由单独的噪声网络预测。
         if self.config.noise_method == "flow_noise":
             self.noise_head = ExploreNoiseNet(
                 in_dim=1024,
@@ -240,24 +250,26 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         transforms: Sequence[_transforms.DataTransformFn] = (),
         output_transforms: Sequence[_transforms.DataTransformFn] = (),
     ):
+        """注册 OpenPI 官方输入/输出变换。"""
         self._input_transform = _transforms.compose(transforms)
         self._output_transform = _transforms.compose(output_transforms)
 
     def input_transform(self, obs: dict, transpose=True):
+        """把 RLinf 的观测字典转成 OpenPI 期望的输入格式。"""
         inputs = jax.tree.map(lambda x: x, obs)
-        # process input
+        # rollout 首次进入时带有 prompt；训练阶段回放时只保留模型需要的字段。
         first_process = "prompt" in inputs.keys()
         if first_process:
             inputs.pop("prompt")
         else:
             inputs = {key: inputs[key] for key in inputs.keys() if "/" in key}
 
-        # tensor -> numpy
+        # OpenPI 的 transform 接口基于 numpy / jax，这里先从 torch 转过去。
         inputs = jax.tree.map(
             lambda x: np.asarray(x.detach().cpu()) if torch.is_tensor(x) else x, inputs
         )
         batch_size = next(v.shape[0] for v in inputs.values() if hasattr(v, "shape"))
-        # split & transform
+        # 逐样本做变换，保持与 OpenPI 原始数据预处理一致。
         transformed_samples = []
         for i in range(batch_size):
             sample = jax.tree.map(lambda x: x[i], inputs)
@@ -277,7 +289,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
                 sample["prompt"] = "xxxx"
             transformed_sample = self._input_transform(sample)
             transformed_samples.append(transformed_sample)
-        # recombine
+        # 把单样本结果重新堆回 batch。
         inputs = jax.tree.map(
             lambda *torch_arr: torch.from_numpy(np.asarray(torch_arr).copy()),
             *transformed_samples,
@@ -289,7 +301,8 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         return inputs
 
     def output_transform(self, outputs):
-        # split & transform
+        """把 OpenPI 动作输出变回环境动作格式。"""
+        # 与输入侧类似，输出 transform 也是逐样本处理后再拼回 batch。
         batch_size = outputs["actions"].shape[0]
         transformed_samples = []
         for i in range(batch_size):
@@ -394,22 +407,28 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         forward_inputs: dict[str, torch.Tensor],
         **kwargs,
     ) -> dict[str, Any]:
+        """训练阶段前向。
+
+        这里不会重新采样动作，而是使用 rollout 时保存的采样链 `chains`
+        和去噪步索引 `denoise_inds`，重算当前策略参数下的 logprob / value / entropy。
+        """
         # get kwargs
         compute_values = kwargs.get("compute_values", False)
         chains = forward_inputs["chains"]
         denoise_inds = forward_inputs["denoise_inds"]
-        # input transform
+        # 把 rollout 保存的 forward_inputs 恢复成 OpenPI 的 Observation 格式。
         observation = self.input_transform(forward_inputs, transpose=False)
         observation = _model.Observation.from_dict(observation)
         images, img_masks, lang_tokens, lang_masks, state = (
             self._preprocess_observation(observation, train=False)
         )
-        # transfer to device
+        # 训练时以 chains 所在设备为准，其他输入全部搬过去。
         device = chains.device
         images = [img.to(device) for img in images]
         img_masks = [img_mask.to(device) for img_mask in img_masks]
         state = state.to(device)
-        # get log prob
+        # 重算“当前 actor 参数”下的 logprob。
+        # 它和 rollout 阶段保存的 old_logprobs 语义一致，但参数可能已经更新。
         log_probs, value_t, entropy = self.get_log_prob_value(
             images,
             img_masks,
@@ -426,7 +445,8 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         entropy = entropy[
             :, :, : self.config.action_chunk, : self.config.action_env_dim
         ]
-        # post process
+        # 这里保留的是 RL 训练真正需要的聚合前张量；
+        # 后续 loss 里还会根据 logprob_type 再做进一步聚合。
         log_probs = log_probs.mean(dim=1)
         entropy = entropy.mean(dim=[1, 2, 3], keepdim=False)[
             :, None
@@ -439,6 +459,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         }
 
     def obs_processor(self, env_obs):
+        """把环境原始观测整理成策略统一使用的字段。"""
         # base observation
         processed_obs = {
             "observation/image": env_obs["main_images"],
@@ -462,6 +483,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         return processed_obs
 
     def precision_processor(self, processed_obs):
+        """把预处理后的观测搬到模型设备，并保证内存连续。"""
         device = next(self.parameters()).device
         for key, value in processed_obs.items():
             if isinstance(value, list):
@@ -487,6 +509,11 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         compute_values=True,
         **kwargs,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
+        """rollout 入口。
+
+        返回的 `actions` 会真正送去环境执行；
+        返回的 `result` 则会被缓存到 sample batch 中，供训练阶段重算 logprob。
+        """
         to_process_obs = self.obs_processor(env_obs)  # env obs -> policy input obs
         processed_obs = self.input_transform(
             to_process_obs, transpose=False
@@ -538,6 +565,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             prev_values = outputs["prev_values"]
             forward_action = None
 
+        # 训练阶段不会重新采样，因此这里要把采样链与相关输入全部存下来。
         forward_inputs = {
             "chains": outputs["chains"],
             "denoise_inds": outputs["denoise_inds"],
@@ -575,7 +603,11 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         mode="train",
         compute_values=True,
     ) -> torch.Tensor:
-        """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
+        """rollout / 推理阶段的完整采样过程。
+
+        采样从纯噪声开始，经过多步 denoise / flow 更新，最终得到动作 `x_0`。
+        同时还会保存整条采样链 `chains`，以及旧策略参数下的 `prev_logprobs`。
+        """
         bsize = observation.state.shape[0]
         device = observation.state.device
         num_steps = self.config.num_steps
@@ -596,7 +628,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
 
-        # Compute image and language key value cache
+        # prefix 只与视觉和语言观测有关，整条采样链里都可以复用这个 KV cache。
         prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
         self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
 
@@ -608,25 +640,27 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             use_cache=True,
         )
 
+        # x_t 表示当前 denoise 步上的动作随机变量。
+        # 初始时等于纯噪声；循环结束后最后的 x_t 就是 x_0，即最终动作。
         x_t = noise
-        # add sde sample and traj collect
+        # chains 会记录整条采样链，训练阶段会基于它重算当前 logprob。
         chains = []
         log_probs = []
         values = []
         chains.append(x_t)
 
-        # add value based on the vlm for pi05, expert for pi0
+        # Pi0.5 可选直接从 VLM prefix 特征上读 value。
         if self.use_vlm_value:
             values_vlm = self.get_value_from_vlm(prefix_output)
         if self.config.joint_logprob:
+            # joint_logprob 模式下，把初始噪声分布 N(0, I) 的概率也计入整条链。
             initial_log_prob = self.get_logprob_norm(
                 x_t, torch.zeros_like(noise), torch.ones_like(noise)
             )
             log_probs.append(initial_log_prob)
 
-        # In the joint logprob mode, we need to sample the logprob for each denoise step
-        # In the non-joint logprob mode, only one denoise step is sampled and ode-sde mix sampling is used
-        # denoise index
+        # joint 模式记录所有 denoise step 的 logprob；
+        # 非 joint 模式只随机选一个 step 作为 old_logprob，降低训练成本。
         if mode == "train":
             if self.config.joint_logprob:
                 denoise_inds = torch.arange(num_steps)
@@ -643,9 +677,10 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             denoise_inds = torch.tensor([-1] * num_steps)
         denoise_inds = denoise_inds[None].repeat(bsize, 1)
 
-        # denoise step
+        # 逐步从 x_t 采样到下一状态，并记录 rollout 当下参数下的 old logprob。
         for idx in range(num_steps):
-            # sample mean var val
+            # 只有被 denoise_inds 选中的那一步按 train 模式采样；
+            # 其余步骤走 eval 模式，相当于确定性推进。
             if idx == denoise_inds[0][idx]:
                 sample_mode = "train"
             else:
@@ -660,27 +695,29 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
                 num_steps,
                 compute_values,
             )
-            # Euler step - use new tensor assignment instead of in-place operation
+            # 根据当前步的高斯分布采样出下一状态。
             x_t = x_t_mean + self.sample_noise(x_t.shape, device) * x_t_std
+            # 这里的 log_prob 就是 rollout 阶段记录下来的旧策略 logprob。
             log_prob = self.get_logprob_norm(x_t, x_t_mean, x_t_std)
-            # store
             values.append(value_t)
             chains.append(x_t)
             log_probs.append(log_prob)
         x_0 = x_t
         chains = torch.stack(chains, dim=1)
-        # post process for logprob
+        # 仅保留环境真实使用的 action chunk 和 action 维度。
         log_probs = torch.stack(log_probs, dim=1)[
             :, :, : self.config.action_chunk, : self.config.action_env_dim
         ]
         if self.config.joint_logprob:
+            # joint 模式把多步 logprob 先沿 denoise 维聚合。
             log_probs = log_probs.mean(dim=1)
         else:
+            # 非 joint 模式只取 rollout 时选择的那一步。
             log_probs = log_probs[
                 torch.arange(log_probs.shape[0]),
                 denoise_inds[:, 0],
             ]
-        # post process for value
+        # value 也对齐成 RLinf 后续模块期望的形状。
         if self.use_vlm_value:
             values = values_vlm[:, None]
         else:
@@ -705,17 +742,21 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         compute_values=True,
     ):
         """
-        Sample the mean, variance and value of the action at a given timestep.
-        Rollout sample (idx is int) and actor get_log_prob_value (idx is tensor) will load this function.
+        计算给定 denoise step 上的采样分布参数。
+
+        输入的 `x_t` 是当前动作随机变量，输出：
+        - x_t_mean：下一次采样使用的均值
+        - x_t_std：下一次采样使用的标准差
+        - value_t：critic 对当前样本的价值估计
+
+        rollout 采样与 actor 训练重算 logprob 两条路径都会复用这个函数。
         """
-        # expand the shape
         bsize = state.shape[0]
         device = state.device
         if isinstance(idx, int):
             idx = torch.tensor(idx).expand(bsize)
-        # build parameters
+        # 可选做噪声退火，让训练后期的采样更稳定。
         if self.config.noise_anneal:
-            # noise annealing
             noise_start, noise_end, anneal_steps = self.config.noise_params
             noise_level = (
                 noise_start
@@ -725,14 +766,13 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             )
             noise_level = torch.tensor(noise_level).to(device)
         else:
-            # fixed noise level
             noise_level = torch.tensor(self.config.noise_level).to(device)
         timesteps = torch.linspace(1, 1 / denoise_steps, denoise_steps, device=device)
         timesteps = torch.cat([timesteps, torch.tensor([0.0], device=device)])
-        # input parameters
+        # t_input 是当前时刻，delta 是这一步的时间跨度。
         t_input = timesteps[idx]
         delta = timesteps[idx] - timesteps[idx + 1]
-        # velocity prediction
+        # 根据当前 x_t 与 observation，预测速度场 / 动作残差。
         suffix_out = self.get_suffix_out(
             state,
             prefix_pad_masks,
@@ -741,7 +781,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             t_input,
         )
         v_t = self.action_out_proj(suffix_out)  # [bs,n_action_steps,max_action_dim]
-        # value prediction
+        # critic 可选择只看 action chunk，或看完整 action horizon。
         if (
             self.config.add_value_head
             and compute_values
@@ -760,17 +800,20 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             value_t = self.value_head(suffix_out_value)[:, 0]
         else:
             value_t = torch.zeros((bsize), device=device)
-        # ode sde mix sampling
+        # x0_pred / x1_pred 分别对应 flow matching 视角下的两个端点估计，
+        # 不同 noise_method 只是在“如何从它们构造当前步高斯分布”上不同。
         delta = delta[:, None, None].expand_as(x_t)
         t_input = t_input[:, None, None].expand_as(x_t)
         x0_pred = x_t - v_t * t_input
         x1_pred = x_t + v_t * (1 - t_input)
         if mode == "eval":
+            # eval 模式不再注入新噪声，转为确定性推进。
             x0_weight = 1 - (t_input - delta)
             x1_weight = t_input - delta
             x_t_std = torch.zeros_like(t_input)
         elif mode == "train":
             if self.config.noise_method == "flow_sde":
+                # flow_sde 使用手工推导的 sigma 调度。
                 sigmas = (
                     noise_level
                     * torch.sqrt(
@@ -790,6 +833,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
                 x1_weight = (t_input - delta) * cos_term
                 x_t_std = (t_input - delta) * sin_term
             elif self.config.noise_method == "flow_noise":
+                # flow_noise 直接由网络预测每个动作 token 的标准差。
                 x0_weight = 1 - (t_input - delta)
                 x1_weight = t_input - delta
                 x_t_std = self.noise_head(suffix_out)
@@ -806,7 +850,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         x_t,
         timestep,
     ):
-        """Apply one denoising step of the noise `x_t` at a given timestep."""
+        """在给定 timestep 上，用当前 `x_t` 做一次 suffix 前向。"""
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = (
             self.embed_suffix(state, x_t, timestep)
         )
@@ -826,7 +870,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
         position_ids = prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
 
-        # Prepare attention masks
+        # suffix token 既要看到 prefix，也要看到自身历史，因此这里构造完整 attention mask。
         full_att_2d_masks_4d = self._prepare_attention_masks_4d(full_att_2d_masks)
         self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = (
             "eager"  # noqa: SLF001
@@ -846,10 +890,14 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         suffix_out = suffix_out.to(dtype=torch.float32)
         return suffix_out
 
-    # TODO: to check potential nan here
     def get_logprob_norm(self, sample, mu, sigma):
-        # logprob = log p(x|mu,sigma) = -log(sigma) - 0.5 * log(2 * pi) - 0.5 * ((x - mu) / sigma) ** 2
+        """计算对角高斯分布下的逐元素 logprob。
+
+        这里返回的是逐 token、逐动作维的 logprob 张量。
+        后续是否聚合成 action-level / chunk-level 标量，由外层 loss 决定。
+        """
         if self.config.safe_get_logprob:
+            # 调试或数值不稳定时可退化为更保守的近似形式。
             log_prob = -torch.pow((sample - mu), 2)
         else:
             mask = sigma == 0
@@ -876,6 +924,14 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         denoise_inds,
         compute_values=False,
     ):
+        """训练阶段重算当前策略下的 logprob / value / entropy。
+
+        输入的 `chains` 来自 rollout 时保存的整条采样链：
+        - `chains[:, 0]` 是初始噪声
+        - `chains[:, k + 1]` 是第 k 步采样后的状态
+
+        这里把 rollout 已经采样到的链当成“已知样本”，在当前参数下重新计算其概率。
+        """
         bsize = state.shape[0]
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
             images, img_masks, lang_tokens, lang_masks
@@ -883,7 +939,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
 
-        # Compute image and language key value cache
+        # prefix 部分与 rollout 路径相同，也只需要算一次 KV cache。
         prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
         self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
 
@@ -899,7 +955,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         chains_values = []
         chains_entropy = []
 
-        # get log prob
+        # joint 模式下，需要把初始噪声的概率也并入整条链的 logprob。
         if self.config.joint_logprob:
             num_steps = self.config.num_steps
             initial_log_prob = self.get_logprob_norm(
@@ -914,6 +970,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             num_steps = 1
         for idx in range(num_steps):
             denoise_ind = denoise_inds[:, idx]
+            # chains_pre / chains_next 对应 rollout 某一步转移前后的状态。
             chains_pre = chains[torch.arange(bsize), denoise_ind]
             chains_next = chains[torch.arange(bsize), denoise_ind + 1]
             x_t_mean, x_t_std, value_t = self.sample_mean_var_val(
@@ -926,6 +983,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
                 self.config.num_steps,
                 compute_values,
             )
+            # 在“当前 actor 参数”下，重算 rollout 已采样到的 chains_next 的 logprob。
             log_probs = self.get_logprob_norm(chains_next, x_t_mean, x_t_std)
             entropy = self.gaussian_entropy(x_t_std)
             chains_log_probs.append(log_probs)
@@ -937,7 +995,8 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         chains_log_probs = torch.stack(chains_log_probs, dim=1)
         chains_values = torch.stack(chains_values, dim=1)
 
-        # entropy is only available for flow-noise method
+        # 只有 flow-noise 显式预测 sigma，entropy 才有直接意义；
+        # 其余模式这里返回零张量占位。
         if self.config.noise_method == "flow_noise":
             chains_entropy = torch.stack(chains_entropy, dim=1)
         else:
@@ -945,10 +1004,10 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         return chains_log_probs, chains_values, chains_entropy
 
     def get_value_from_vlm(self, prefix_output):
+        """从 VLM prefix token 上读取 value。"""
         # prefix_output:
         # pi05: [bs, (256 * 3 + 200) = 968, 2048]
         # pi0: [bs, (256 * 3 + 48) = 816, 1024]
-        # token length
         if "pi05_" in self.config.config_name:
             lang_token_len = 200
             all_token_length = 968
@@ -966,6 +1025,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             prefix_mask = [False] * (all_token_length - 1) + [True] * 1
         elif self.config.value_vlm_mode == "first_token":
             prefix_mask = [True] * 1 + [False] * (all_token_length - 1)
+        # 根据配置选出需要聚合的 prefix token，再做平均池化得到 value 特征。
         prefix_out_value = prefix_output[:, prefix_mask, :]
         prefix_out_value = prefix_out_value.mean(dim=1, keepdim=False)
         prefix_out_value = prefix_out_value.to(dtype=torch.float32)
@@ -973,12 +1033,14 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         return values_vlm
 
     def gaussian_entropy(self, sigma):
+        """计算对角高斯分布的逐元素熵。"""
         mask = sigma == 0
         sigma_safe = torch.where(mask, torch.ones_like(sigma), sigma)
         entropy = 0.5 * torch.log(2 * math.pi * math.e * (sigma_safe**2))
         return entropy
 
     def freeze_vlm(self):
+        """仅训练 action expert 时，冻结 VLM 主干。"""
         if self.config.train_expert_only:
             # Base freeze: paligemma (SigLIP vision encoder + Gemma)
             self.paligemma_with_expert.paligemma.eval()

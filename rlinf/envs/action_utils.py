@@ -205,7 +205,11 @@ def prepare_actions(
             raw_chunk_actions=raw_chunk_actions,
             model_type=model_type,
         )
-    elif env_type == SupportedEnvType.OPENSORAWM or env_type == SupportedEnvType.WANWM:
+    elif env_type in [
+        SupportedEnvType.OPENSORAWM,
+        SupportedEnvType.WANWM,
+        SupportedEnvType.CTRLWORLDWM,
+    ]:
         # TODO: Implement prepare_actions_for_opensora_wm
         if wm_env_type == "libero":
             chunk_actions = prepare_actions_for_libero(

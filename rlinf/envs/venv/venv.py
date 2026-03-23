@@ -14,7 +14,10 @@
 
 import cloudpickle
 import ctypes
-import gym
+try:
+    import gymnasium as gym
+except ImportError:
+    import gym
 import numpy as np
 import warnings
 import time
