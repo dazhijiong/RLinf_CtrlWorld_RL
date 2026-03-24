@@ -15,6 +15,8 @@
 from .franka import FrankaEnv, FrankaRobotConfig, FrankaRobotState
 from .franka import tasks as franka_tasks
 from .realworld_env import RealWorldEnv
+from .ur5 import UR5Env, UR5RobotConfig, UR5RobotState
+from .ur5 import tasks as ur5_tasks
 from .xsquare import Turtle2Env, Turtle2RobotConfig, Turtle2RobotState
 from .xsquare import tasks as xsquare_tasks
 
@@ -25,6 +27,10 @@ __all__ = [
     "FrankaRobotConfig",
     "FrankaRobotState",
     "franka_tasks",
+    "UR5Env",
+    "UR5RobotConfig",
+    "UR5RobotState",
+    "ur5_tasks",
     "Turtle2Env",
     "Turtle2RobotConfig",
     "Turtle2RobotState",

@@ -1,4 +1,4 @@
-# Copyright 2025 The RLinf Authors.
+# Copyright 2026 The RLinf Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,15 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .franka import FrankaConfig, FrankaHWInfo
-from .ur5 import UR5Config, UR5HWInfo
-from .xsquare import Turtle2Config, Turtle2HWInfo
+from .ur5_env import UR5Env, UR5RobotConfig, UR5RobotState
 
-__all__ = [
-    "FrankaConfig",
-    "FrankaHWInfo",
-    "UR5Config",
-    "UR5HWInfo",
-    "Turtle2Config",
-    "Turtle2HWInfo",
-]
+__all__ = ["UR5Env", "UR5RobotState", "UR5RobotConfig"]

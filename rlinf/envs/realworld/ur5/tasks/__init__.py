@@ -1,4 +1,4 @@
-# Copyright 2025 The RLinf Authors.
+# Copyright 2026 The RLinf Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,15 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .franka import FrankaConfig, FrankaHWInfo
-from .ur5 import UR5Config, UR5HWInfo
-from .xsquare import Turtle2Config, Turtle2HWInfo
+from gymnasium.envs.registration import register
 
-__all__ = [
-    "FrankaConfig",
-    "FrankaHWInfo",
-    "UR5Config",
-    "UR5HWInfo",
-    "Turtle2Config",
-    "Turtle2HWInfo",
-]
+from rlinf.envs.realworld.ur5.tasks.reach_env import UR5ReachEnv as UR5ReachEnv
+
+register(
+    id="UR5ReachEnv-v1",
+    entry_point="rlinf.envs.realworld.ur5.tasks:UR5ReachEnv",
+)

@@ -15,6 +15,7 @@
 import torch
 
 from rlinf.data.embodied_io_struct import Trajectory
+from rlinf.utils.nested_dict_process import infer_batch_size
 
 
 def _build_success_trajectory():
@@ -96,3 +97,15 @@ def test_extract_success_traj_keeps_full_prefix_when_not_truncating():
         first_traj.forward_inputs["model_action"][:, 0, 0],
         torch.tensor([0.0, 4.0, 8.0, 12.0]),
     )
+
+
+def test_infer_batch_size_from_nested_dict():
+    batch = {
+        "forward_inputs": {
+            "observation/main_images": torch.zeros(3, 2, 2),
+            "action": torch.zeros(3, 10),
+        },
+        "curr_obs": {"states": torch.zeros(3, 7)},
+    }
+
+    assert infer_batch_size(batch) == 3

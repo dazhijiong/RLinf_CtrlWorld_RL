@@ -18,7 +18,7 @@ NO_ROOT=0
 NO_INSTALL_RLINF_CMD="--no-install-project"
 SUPPORTED_TARGETS=("embodied" "agentic" "docs")
 SUPPORTED_MODELS=("openvla" "openvla-oft" "openpi" "gr00t" "dexbotic" "lingbotvla")
-SUPPORTED_ENVS=("behavior" "maniskill_libero" "metaworld" "calvin" "isaaclab" "robocasa" "franka" "frankasim" "robotwin" "habitat" "opensora" "wan" "xsquare_turtle2" "liberopro" "liberoplus" "ctrl_world")
+SUPPORTED_ENVS=("behavior" "maniskill_libero" "metaworld" "calvin" "isaaclab" "robocasa" "franka" "frankasim" "robotwin" "habitat" "opensora" "wan" "xsquare_turtle2" "ur5" "liberopro" "liberoplus" "ctrl_world")
 
 #=======================Utility Functions=======================
 
@@ -500,6 +500,13 @@ install_openpi_model() {
             install_flash_attn
             install_robotwin_env
             ;;
+        ur5)
+            create_and_sync_venv
+            install_common_embodied_deps
+            uv pip install git+${GITHUB_PREFIX}https://github.com/RLinf/openpi
+            install_flash_attn
+            install_ur5_env
+            ;;
         *)
             echo "Environment '$ENV_NAME' is not supported for OpenPI model." >&2
             exit 1
@@ -610,6 +617,10 @@ install_env_only() {
         xsquare_turtle2)
             uv sync --extra xsquare_turtle2 --active $NO_INSTALL_RLINF_CMD
             install_xsquare_turtle2_env
+            ;;
+        ur5)
+            uv sync --extra ur5 --active $NO_INSTALL_RLINF_CMD
+            install_ur5_env
             ;;
         habitat)
             install_common_embodied_deps
@@ -767,6 +778,21 @@ install_franka_env() {
 
 install_xsquare_turtle2_env() {
     uv pip install git+${GITHUB_PREFIX}https://github.com/RLinf/xsquare_turtle_basics.git
+}
+
+install_ur5_env() {
+    uv pip install ur-rtde==1.6.3
+    cat <<'EOF'
+UR5 environment scaffold installed.
+
+RLinf provides the UR5 realworld integration skeleton and installs ur-rtde.
+
+The bundled RLinf adapter path is:
+  rlinf.envs.realworld.ur5.ur_rtde_controller:CustomUR5Controller
+
+Adjust the adapter implementation as needed for your robot, safety settings,
+and gripper wiring.
+EOF
 }
 
 install_robotwin_env() {

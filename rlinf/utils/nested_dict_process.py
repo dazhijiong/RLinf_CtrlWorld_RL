@@ -54,6 +54,33 @@ def put_tensor_device(data_dict, device):
     return data_dict
 
 
+def infer_batch_size(data):
+    """Infer batch size from the first tensor found in a nested structure."""
+    if data is None:
+        return None
+
+    if isinstance(data, torch.Tensor):
+        if data.dim() == 0:
+            return None
+        return int(data.shape[0])
+
+    if isinstance(data, dict):
+        for value in data.values():
+            batch_size = infer_batch_size(value)
+            if batch_size is not None:
+                return batch_size
+        return None
+
+    if isinstance(data, (list, tuple)):
+        for value in data:
+            batch_size = infer_batch_size(value)
+            if batch_size is not None:
+                return batch_size
+        return None
+
+    return None
+
+
 def split_dict_to_chunk(data: dict, split_size, dim=0):
     splited_list = [{} for _ in range(split_size)]
     for key, value in data.items():

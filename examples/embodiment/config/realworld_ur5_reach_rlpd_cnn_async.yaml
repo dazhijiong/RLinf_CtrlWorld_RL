@@ -1,0 +1,190 @@
+defaults:
+  - env/realworld_ur5_reach@env.train
+  - env/realworld_ur5_reach@env.eval
+  - model/cnn_policy@actor.model
+  - training_backend/fsdp@actor.fsdp_config
+  - override hydra/job_logging: stdout
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:EMBODIED_PATH}/config/
+
+cluster:
+  num_nodes: 2
+  component_placement:
+    actor:
+      node_group: "4090"
+      placement: 0
+    env:
+      node_group: ur5
+      placement: 0
+    rollout:
+      node_group: "4090"
+      placement: 0
+  node_groups:
+    - label: "4090"
+      node_ranks: 0
+    - label: ur5
+      node_ranks: 1
+      hardware:
+        type: UR5
+        configs:
+          - robot_ip: ROBOT_IP
+            node_rank: 1
+
+runner:
+  task_type: embodied
+  logger:
+    log_path: "../results"
+    project_name: rlinf
+    experiment_name: "ur5_reach_rlpd_cnn"
+    logger_backends: ["tensorboard"]
+  max_epochs: 8000
+  max_steps: -1
+  only_eval: False
+  val_check_interval: -1
+  save_interval: -1
+  resume_dir: null
+  ckpt_path: null
+
+algorithm:
+  update_epoch: 8
+  group_size: 1
+  agg_q: min
+  actor_agg_q: mean
+  enable_drq: False
+  backup_entropy: False
+  critic_subsample_size: 2
+  eval_rollout_epoch: 1
+  adv_type: embodied_sac
+  loss_type: embodied_sac
+  loss_agg_func: "token-mean"
+  bootstrap_type: standard
+  gamma: 0.96
+  tau: 0.005
+  entropy_tuning:
+    alpha_type: softplus
+    initial_alpha: 0.01
+    target_entropy: -3
+    optim:
+      lr: 3.0e-4
+      lr_scheduler: torch_constant
+      clip_grad: 10.0
+  critic_actor_ratio: 4
+  replay_buffer:
+    enable_cache: True
+    cache_size: 200
+    min_buffer_size: 2
+    sample_window_size: 200
+    auto_save: False
+  demo_buffer:
+    enable_cache: True
+    cache_size: 200
+    min_buffer_size: 1
+    sample_window_size: 200
+    load_path: "/path/to/demo_data"
+    auto_save: False
+  target_update_freq: 1
+  sampling_params:
+    do_sample: True
+    temperature_train: 1.0
+    temperature_eval: 0.6
+    top_k: 50
+    top_p: 1.0
+    repetition_penalty: 1.0
+  length_params:
+    max_new_token: 7
+    max_length: 1024
+    min_length: 1
+
+env:
+  group_name: "EnvGroup"
+  train:
+    ignore_terminations: False
+    no_gripper: False
+    total_num_envs: 1
+    keyboard_reward_wrapper: single_stage
+    use_spacemouse: True
+    max_steps_per_rollout_epoch: 150
+    max_episode_steps: 150
+    override_cfg:
+      is_dummy: False
+      target_ee_pose: TARGET_EE_POSE
+      camera_serials: ["CAMERA_SERIAL1", "CAMERA_SERIAL2", "CAMERA_SERIAL3"]
+      controller_cls_path: "rlinf.envs.realworld.ur5.ur_rtde_controller:CustomUR5Controller"
+      controller_backend: "custom"
+      gripper_type: "robotiq"
+      gripper_port: 63352
+      tcp_offset: null
+      move_acc: 0.25
+      move_vel: 0.25
+      use_dense_reward: False
+      max_num_steps: 150
+      enable_gripper_penalty: False
+  eval:
+    total_num_envs: 1
+    override_cfg:
+      is_dummy: False
+      target_ee_pose: TARGET_EE_POSE
+      camera_serials: ["CAMERA_SERIAL1", "CAMERA_SERIAL2", "CAMERA_SERIAL3"]
+      controller_cls_path: "rlinf.envs.realworld.ur5.ur_rtde_controller:CustomUR5Controller"
+      controller_backend: "custom"
+      gripper_type: "robotiq"
+      gripper_port: 63352
+      tcp_offset: null
+      move_acc: 0.25
+      move_vel: 0.25
+
+rollout:
+  group_name: "RolloutGroup"
+  backend: "huggingface"
+  enable_offload: False
+  pipeline_stage_num: 1
+  sync_weight_nccl_max_ctas: 32
+  collect_transitions: True
+  collect_prev_infos: False
+  model:
+    action_dim: 7
+    image_num: 1
+    model_path: "/path/to/model"
+    precision: ${actor.model.precision}
+    num_q_heads: 10
+  enable_torch_compile: True
+
+actor:
+  group_name: "ActorGroup"
+  training_backend: "fsdp"
+  micro_batch_size: 256
+  global_batch_size: 256
+  seed: 1234
+  enable_offload: False
+  model:
+    model_path: "/path/to/model"
+    state_dim: 19
+    action_dim: 7
+    image_num: 1
+    num_q_heads: 10
+  optim:
+    lr: 3.0e-4
+    clip_grad: 10.0
+    lr_scheduler: torch_constant
+  critic_optim:
+    clip_grad: 10.0
+    lr: 3e-4
+    lr_scheduler: torch_constant
+  fsdp_config:
+    strategy: "fsdp"
+    sharding_strategy: "no_shard"
+    mixed_precision:
+      param_dtype: ${actor.model.precision}
+      reduce_dtype: ${actor.model.precision}
+      buffer_dtype: ${actor.model.precision}
+
+reward:
+  use_reward_model: False
+
+critic:
+  use_critic_model: False

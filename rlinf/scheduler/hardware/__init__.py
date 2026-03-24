@@ -20,7 +20,14 @@ from .hardware import (
     HardwareResource,
     NodeHardwareConfig,
 )
-from .robots import FrankaConfig, FrankaHWInfo, Turtle2Config, Turtle2HWInfo
+from .robots import (
+    FrankaConfig,
+    FrankaHWInfo,
+    Turtle2Config,
+    Turtle2HWInfo,
+    UR5Config,
+    UR5HWInfo,
+)
 
 __all__ = [
     "AcceleratorUtil",
@@ -33,6 +40,8 @@ __all__ = [
     "NodeHardwareConfig",
     "FrankaConfig",
     "FrankaHWInfo",
+    "UR5Config",
+    "UR5HWInfo",
     "Turtle2Config",
     "Turtle2HWInfo",
 ]

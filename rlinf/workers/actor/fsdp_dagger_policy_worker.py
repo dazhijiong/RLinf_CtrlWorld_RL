@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 import os
 
 import numpy as np
@@ -26,7 +27,11 @@ from rlinf.scheduler import Channel, Worker
 from rlinf.utils import drq
 from rlinf.utils.distributed import all_reduce_dict
 from rlinf.utils.metric_utils import append_to_dict, compute_split_num
-from rlinf.utils.nested_dict_process import put_tensor_device, split_dict_to_chunk
+from rlinf.utils.nested_dict_process import (
+    infer_batch_size,
+    put_tensor_device,
+    split_dict_to_chunk,
+)
 from rlinf.utils.utils import clear_memory
 from rlinf.workers.actor.fsdp_actor_worker import EmbodiedFSDPActor
 
@@ -140,17 +145,35 @@ class EmbodiedDAGGERFSDPPolicy(EmbodiedFSDPActor):
     @Worker.timer("update_one_epoch")
     def update_one_epoch(self):
         """Run one replay-buffer update epoch for DAgger."""
-        global_batch_size_per_rank = (
+        target_batch_size_per_rank = (
             self.cfg.actor.global_batch_size // self._world_size
         )
         with self.worker_timer("sample"):
             global_batch = self.replay_buffer.sample(
-                num_chunks=global_batch_size_per_rank
+                num_chunks=target_batch_size_per_rank
+            )
+
+        actual_batch_size = infer_batch_size(global_batch)
+        if actual_batch_size is None or actual_batch_size <= 0:
+            self.log_on_first_rank(
+                "Replay buffer returned an empty supervised batch, skipping update."
+            )
+            return {}
+
+        micro_batch_size = self.cfg.actor.micro_batch_size
+        micro_batch_cnt = max(1, math.ceil(actual_batch_size / micro_batch_size))
+        self.gradient_accumulation = micro_batch_cnt
+
+        if actual_batch_size < target_batch_size_per_rank:
+            self.log_on_first_rank(
+                f"Replay buffer yielded {actual_batch_size} samples, smaller than "
+                f"target per-rank batch size {target_batch_size_per_rank}; "
+                "using dynamic supervised batch splitting for this update."
             )
 
         train_micro_batch_list = split_dict_to_chunk(
             global_batch,
-            global_batch_size_per_rank // self.cfg.actor.micro_batch_size,
+            micro_batch_cnt,
         )
         for idx, batch in enumerate(train_micro_batch_list):
             batch = put_tensor_device(batch, device=self.device)
@@ -160,18 +183,24 @@ class EmbodiedDAGGERFSDPPolicy(EmbodiedFSDPActor):
             train_micro_batch_list[idx] = batch
 
         self.optimizer.zero_grad()
-        gbs_actor_loss = []
+        weighted_actor_loss = 0.0
         for mb_idx, batch in enumerate(train_micro_batch_list):
+            current_micro_batch_size = infer_batch_size(batch)
+            if current_micro_batch_size is None or current_micro_batch_size <= 0:
+                continue
+
             backward_ctx = self.before_micro_batch(
                 self.model,
-                is_last_micro_batch=(mb_idx + 1) == self.gradient_accumulation,
+                is_last_micro_batch=(mb_idx + 1) == len(train_micro_batch_list),
             )
             with self.amp_context:
                 actor_loss = self.forward_actor(batch["forward_inputs"])
-            actor_loss = actor_loss / self.gradient_accumulation
+            scaled_actor_loss = actor_loss * (
+                current_micro_batch_size / actual_batch_size
+            )
             with backward_ctx:
-                self.grad_scaler.scale(actor_loss).backward()
-            gbs_actor_loss.append(actor_loss.item() * self.gradient_accumulation)
+                self.grad_scaler.scale(scaled_actor_loss).backward()
+            weighted_actor_loss += actor_loss.item() * current_micro_batch_size
 
         actor_grad_norm = self.model.clip_grad_norm_(
             max_norm=self.cfg.actor.optim.clip_grad
@@ -180,7 +209,7 @@ class EmbodiedDAGGERFSDPPolicy(EmbodiedFSDPActor):
         self.lr_scheduler.step()
 
         return {
-            "dagger/actor_loss": np.mean(gbs_actor_loss),
+            "dagger/actor_loss": weighted_actor_loss / actual_batch_size,
             "actor/lr": self.optimizer.param_groups[0]["lr"],
             "actor/grad_norm": actor_grad_norm,
         }
