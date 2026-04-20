@@ -22,6 +22,7 @@ add_value_head: False
 openpi:
   config_name: "pi05_libero"
   num_images_in_input: 2
+  add_libero_prompt_prefix: True
   noise_level: 0.5
   action_chunk: ${actor.model.num_action_chunks}
   num_steps: ${actor.model.num_steps}

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-#SBATCH -J rlinf_ctrl_world_pi05_success_fm
+#SBATCH -J rlinf_ctrl_world_pi05_open_book_success_fm
 #SBATCH -A naiss2025-22-1173
-#SBATCH --output=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/ctrl_world_pi05_success_fm_out_%j.txt
-#SBATCH --error=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/ctrl_world_pi05_success_fm_err_%j.txt
+#SBATCH --output=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/ctrl_world_pi05_open_book_success_fm_out_%j.txt
+#SBATCH --error=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/ctrl_world_pi05_open_book_success_fm_err_%j.txt
 #SBATCH --nodes=2
-#SBATCH --gpus-per-node=A100:4
+#SBATCH --gpus-per-node=A100:4 -C MEM512
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=12
+#SBATCH --cpus-per-task=16
 #SBATCH --time=10:00:00
 #SBATCH -p alvis
 
@@ -34,20 +34,16 @@ module load PyTorch/2.7.1-foss-2024a-CUDA-12.6.0
 module load FFmpeg/7.0.2-GCCcore-13.3.0
 module load git-lfs/3.6.1
 
-# ----------------------------
-# Editable runtime parameters
-# ----------------------------
-CONFIG_NAME="${CONFIG_NAME:-ctrl_world_libero_spatial_success_fm_openpi_pi05}"
+CONFIG_NAME="${CONFIG_NAME:-ctrl_world_open_book_success_fm_openpi_pi05}"
 
 VENV_PATH="${VENV_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/.venv_pi05}"
 CTRL_WORLD_PATH="${CTRL_WORLD_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World}"
 LIBERO_REPO_PATH="${LIBERO_REPO_PATH:-${VENV_PATH}/libero}"
 
-POLICY_MODEL_PATH="${POLICY_MODEL_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_libero_sft_train20_step2000_local}"
-INITIAL_IMAGE_PATH="${INITIAL_IMAGE_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/datasets/lerobot_libero_spatial_image}"
-REWARD_MODEL_PATH="${REWARD_MODEL_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/RLinf-OpenSora-LIBERO-Spatial/resnet_rm.pth}"
-CTRL_WORLD_CKPT_PATH="${CTRL_WORLD_CKPT_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World/model_ckpt/doird_subset/checkpoint-10000.pt}"
-RESUME_DIR="${RESUME_DIR:-}"
+POLICY_MODEL_PATH="${POLICY_MODEL_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_book_sft_step3000_local}"
+INITIAL_IMAGE_PATH="${INITIAL_IMAGE_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/lerobot_book}"
+REWARD_MODEL_PATH="${REWARD_MODEL_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/reward_model/outputs/open_book_resnet_rm/resnet_rm.pth}"
+CTRL_WORLD_CKPT_PATH="${CTRL_WORLD_CKPT_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World/model_ckpt/ctrl_world_book_from_lerobot_base_20260404/checkpoint-15000.pt}"
 
 MUJOCO_GL="${MUJOCO_GL:-egl}"
 PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
@@ -83,6 +79,7 @@ export PYOPENGL_PLATFORM
 export PYTORCH_CUDA_ALLOC_CONF
 export ROBOT_PLATFORM
 export TOKENIZERS_PARALLELISM
+export RAY_memory_monitor_refresh_ms="${RAY_memory_monitor_refresh_ms:-0}"
 export PYTHONPATH="${REPO_PATH}:${LIBERO_REPO_PATH}:${PYTHONPATH:-}"
 export WANDB_MODE
 
@@ -98,8 +95,8 @@ if [[ ! -f "${CTRL_WORLD_CKPT_PATH}" ]]; then
   echo "CTRL_WORLD_CKPT_PATH does not exist: ${CTRL_WORLD_CKPT_PATH}" >&2
   exit 1
 fi
-if [[ -n "${RESUME_DIR}" && ! -d "${RESUME_DIR}" ]]; then
-  echo "RESUME_DIR does not exist: ${RESUME_DIR}" >&2
+if [[ ! -d "${POLICY_MODEL_PATH}" ]]; then
+  echo "POLICY_MODEL_PATH does not exist: ${POLICY_MODEL_PATH}" >&2
   exit 1
 fi
 
@@ -179,10 +176,6 @@ CMD=(
   "exp.paths.policy_model_path=${POLICY_MODEL_PATH}"
 )
 
-if [[ -n "${RESUME_DIR}" ]]; then
-  CMD+=("runner.resume_dir=${RESUME_DIR}")
-fi
-
 if [[ $# -gt 0 ]]; then
   CMD+=("$@")
 fi
@@ -202,7 +195,6 @@ export TRAIN_CMD_STR
   echo "INITIAL_IMAGE_PATH=${INITIAL_IMAGE_PATH}"
   echo "REWARD_MODEL_PATH=${REWARD_MODEL_PATH}"
   echo "POLICY_MODEL_PATH=${POLICY_MODEL_PATH}"
-  echo "RESUME_DIR=${RESUME_DIR}"
   echo "LIBERO_REPO_PATH=${LIBERO_REPO_PATH}"
   echo "ROBOT_PLATFORM=${ROBOT_PLATFORM}"
   echo "WANDB_MODE=${WANDB_MODE}"
@@ -210,6 +202,7 @@ export TRAIN_CMD_STR
   echo "WANDB_DIR=${WANDB_DIR}"
   echo "MUJOCO_GL=${MUJOCO_GL}"
   echo "PYOPENGL_PLATFORM=${PYOPENGL_PLATFORM}"
+  echo "RAY_memory_monitor_refresh_ms=${RAY_memory_monitor_refresh_ms}"
   echo "RAY_TMPDIR(runtime)=${RAY_TMPDIR_RUNTIME}"
   echo "SLURM_JOB_NODELIST=${SLURM_JOB_NODELIST}"
   echo "Node list: ${NODE_LIST[*]}"

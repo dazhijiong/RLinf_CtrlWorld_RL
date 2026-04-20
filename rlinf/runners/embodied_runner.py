@@ -198,6 +198,36 @@ class EmbodiedRunner:
             if values
         }
 
+    def _sum_numeric_metrics(self, metrics_list: list[dict] | None) -> dict[str, float]:
+        if not metrics_list:
+            return {}
+        merged_metrics: dict[str, float] = defaultdict(float)
+        for metrics in metrics_list:
+            if not metrics:
+                continue
+            for key, value in metrics.items():
+                merged_metrics[key] += float(value)
+        return dict(merged_metrics)
+
+    def _sum_ranked_numeric_metrics(
+        self, metrics_lists: list[list[dict]] | None
+    ) -> list[dict]:
+        if not metrics_lists:
+            return []
+        max_rank = max((len(metrics) for metrics in metrics_lists), default=0)
+        ranked_metrics: list[dict] = []
+        for rank in range(max_rank):
+            ranked_metrics.append(
+                self._sum_numeric_metrics(
+                    [
+                        metrics[rank]
+                        for metrics in metrics_lists
+                        if rank < len(metrics) and metrics[rank]
+                    ]
+                )
+            )
+        return ranked_metrics
+
     def _process_ranked_numeric_results(
         self, results: list[dict], metric_field: str
     ) -> tuple[dict, list[dict]]:
@@ -248,6 +278,45 @@ class EmbodiedRunner:
                 ranked_metrics_list[rank] = compute_evaluate_metrics(metrics_list)
         return aggregated_metrics, ranked_metrics_list
 
+    def _get_replay_buffer_warmup_status(self) -> dict[str, int | bool]:
+        if not self.cfg.runner.get("rollout_until_replay_buffer_ready", False):
+            return {
+                "enabled": False,
+                "has_replay_buffer": False,
+                "is_ready": True,
+                "buffer_size": 0,
+                "min_buffer_size": 0,
+            }
+
+        status_list = self.actor.get_replay_buffer_warmup_status().wait()
+        replay_statuses = [
+            status
+            for status in status_list
+            if status is not None and status.get("has_replay_buffer", False)
+        ]
+        if not replay_statuses:
+            return {
+                "enabled": True,
+                "has_replay_buffer": False,
+                "is_ready": True,
+                "buffer_size": 0,
+                "min_buffer_size": 0,
+            }
+
+        return {
+            "enabled": True,
+            "has_replay_buffer": True,
+            "is_ready": all(
+                bool(status.get("is_ready", True)) for status in replay_statuses
+            ),
+            "buffer_size": min(
+                int(status.get("buffer_size", 0)) for status in replay_statuses
+            ),
+            "min_buffer_size": max(
+                int(status.get("min_buffer_size", 0)) for status in replay_statuses
+            ),
+        }
+
     def run(self):
         start_step = self.global_step
         start_time = time.time()
@@ -260,22 +329,60 @@ class EmbodiedRunner:
                 with self.timer("sync_weights"):
                     if _step % self.weight_sync_interval == 0:
                         self.update_rollout_weights()
-                with self.timer("generate_rollouts"):
-                    env_handle: Handle = self.env.interact(
-                        input_channel=self.rollout_channel,
-                        output_channel=self.env_channel,
-                        actor_channel=self.actor_channel,
-                    )
-                    rollout_handle: Handle = self.rollout.generate(
-                        input_channel=self.env_channel,
-                        output_channel=self.rollout_channel,
-                    )
-                    self.actor.recv_rollout_trajectories(
-                        input_channel=self.actor_channel
-                    ).wait()
-                    rollout_handle.wait()
+                env_handles: list[Handle] = []
+                rollout_handles: list[Handle] = []
+                env_results_list = []
+                ranked_env_results = []
+                rollout_phase = 0
 
-                # compute advantages and returns.
+                with self.timer("generate_rollouts"):
+                    while True:
+                        rollout_phase += 1
+                        env_handle = self.env.interact(
+                            input_channel=self.rollout_channel,
+                            output_channel=self.env_channel,
+                            actor_channel=self.actor_channel,
+                        )
+                        rollout_handle = self.rollout.generate(
+                            input_channel=self.env_channel,
+                            output_channel=self.rollout_channel,
+                        )
+                        self.actor.recv_rollout_trajectories(
+                            input_channel=self.actor_channel
+                        ).wait()
+                        rollout_handle.wait()
+
+                        env_handles.append(env_handle)
+                        rollout_handles.append(rollout_handle)
+
+                        env_results = env_handle.wait()
+                        env_results_list.extend(
+                            results for results in env_results if results is not None
+                        )
+                        ranked_env_results.extend(
+                            {
+                                "rank": rank,
+                                "env": rank_metrics,
+                            }
+                            for rank, rank_metrics in enumerate(env_results)
+                            if rank_metrics is not None
+                        )
+
+                        warmup_status = self._get_replay_buffer_warmup_status()
+                        if (
+                            warmup_status["is_ready"]
+                            or not warmup_status["has_replay_buffer"]
+                        ):
+                            break
+
+                        self.logger.info(
+                            "Replay buffer warmup: collected %s/%s trajectories after rollout phase %s; continuing rollout collection before training.",
+                            warmup_status["buffer_size"],
+                            warmup_status["min_buffer_size"],
+                            rollout_phase,
+                        )
+
+                # compute advantages and returns once after rollout warmup completes.
                 with self.timer("cal_adv_and_returns"):
                     actor_rollout_metrics = (
                         self.actor.compute_advantages_and_returns().wait()
@@ -310,11 +417,25 @@ class EmbodiedRunner:
 
             time_metrics = self.timer.consume_durations()
             time_metrics = {f"time/{k}": v for k, v in time_metrics.items()}
-            env_time_metrics, env_time_metrics_per_rank = env_handle.consume_durations(
-                return_per_rank=True
+            env_timing_data = [
+                env_handle.consume_durations(return_per_rank=True)
+                for env_handle in env_handles
+            ]
+            env_time_metrics = self._sum_numeric_metrics(
+                [timing[0] for timing in env_timing_data]
             )
-            rollout_time_metrics, rollout_time_metrics_per_rank = (
+            env_time_metrics_per_rank = self._sum_ranked_numeric_metrics(
+                [timing[1] for timing in env_timing_data]
+            )
+            rollout_timing_data = [
                 rollout_handle.consume_durations(return_per_rank=True)
+                for rollout_handle in rollout_handles
+            ]
+            rollout_time_metrics = self._sum_numeric_metrics(
+                [timing[0] for timing in rollout_timing_data]
+            )
+            rollout_time_metrics_per_rank = self._sum_ranked_numeric_metrics(
+                [timing[1] for timing in rollout_timing_data]
             )
             actor_time_metrics, actor_time_metrics_per_rank = (
                 actor_training_handle.consume_durations(return_per_rank=True)
@@ -329,17 +450,8 @@ class EmbodiedRunner:
                 {f"time/actor/{k}": v for k, v in actor_time_metrics.items()}
             )
 
-            env_results = env_handle.wait()
-            env_results_list = [
-                results for results in env_results if results is not None
-            ]
             env_metrics = compute_evaluate_metrics(env_results_list)
             env_metrics = {f"env/{k}": v for k, v in env_metrics.items()}
-            ranked_env_results = [
-                {"rank": rank, "env": rank_metrics}
-                for rank, rank_metrics in enumerate(env_results)
-                if rank_metrics is not None
-            ]
             _, env_metrics_per_rank = self._process_ranked_eval_results(
                 ranked_env_results, metric_field="env"
             )

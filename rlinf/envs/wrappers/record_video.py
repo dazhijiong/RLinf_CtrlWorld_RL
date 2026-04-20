@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import numbers
 import os
 import warnings
@@ -74,7 +75,7 @@ class RecordVideo(gym.Wrapper):
 
         self.video_cfg = video_cfg
         self.render_images: list[np.ndarray] = []
-        self.success_images: list[tuple[np.ndarray, int, int, int, str]] = []
+        self.success_images: list[dict[str, Any]] = []
         self.video_cnt = 0
         self.success_image_cnt = 0
         self._num_envs = getattr(env, "num_envs", 1)
@@ -347,32 +348,29 @@ class RecordVideo(gym.Wrapper):
         """Build a per-env info dict for overlay."""
         info_item: dict[str, Any] = {}
 
+        def _select_time_value(value: Any) -> Any:
+            if time_idx is None or not isinstance(value, (np.ndarray, list, tuple)):
+                return value
+
+            value_len = len(value)
+            if value_len == 0:
+                return value
+
+            effective_idx = time_idx
+            if num_frames == 1 and value_len > 1:
+                effective_idx = value_len - 1
+            elif effective_idx >= value_len:
+                effective_idx = value_len - 1
+            return value[effective_idx]
+
         if rewards is not None:
             value = self._value_for_env(rewards, env_id)
-            if time_idx is not None and isinstance(value, (np.ndarray, list, tuple)):
-                value_len = len(value)
-                if value_len > 0:
-                    # If only one rendered frame represents a whole chunk, show the
-                    # last reward in that chunk instead of the first one.
-                    effective_idx = time_idx
-                    if num_frames == 1 and value_len > 1:
-                        effective_idx = value_len - 1
-                    elif effective_idx >= value_len:
-                        effective_idx = value_len - 1
-                    value = value[effective_idx]
+            value = _select_time_value(value)
             info_item["reward"] = float(value) if value is not None else value
 
         if terminations is not None:
             value = self._value_for_env(terminations, env_id)
-            if time_idx is not None and isinstance(value, (np.ndarray, list, tuple)):
-                value_len = len(value)
-                if value_len > 0:
-                    effective_idx = time_idx
-                    if num_frames == 1 and value_len > 1:
-                        effective_idx = value_len - 1
-                    elif effective_idx >= value_len:
-                        effective_idx = value_len - 1
-                    value = value[effective_idx]
+            value = _select_time_value(value)
             info_item["termination"] = bool(value) if value is not None else value
 
         if infos is not None:
@@ -381,11 +379,37 @@ class RecordVideo(gym.Wrapper):
                 if value is None:
                     continue
                 value = self._value_for_env(value, env_id)
+                value = _select_time_value(value)
+                if key == "policy_action_last":
+                    action_value = np.asarray(value, dtype=np.float32).reshape(-1)
+                    if action_value.size >= 7:
+                        info_item["a_xyz"] = ",".join(
+                            f"{x:.3f}" for x in action_value[:3]
+                        )
+                        info_item["a_rot"] = ",".join(
+                            f"{x:.3f}" for x in action_value[3:6]
+                        )
+                        info_item["a_g"] = f"{action_value[6]:.3f}"
+                        continue
                 if isinstance(value, np.ndarray):
                     if value.shape == ():
                         value = value.item()
                     elif value.size == 1:
                         value = value.reshape(-1)[0].item()
+                    else:
+                        value = np.array2string(
+                            value.astype(np.float32, copy=False),
+                            precision=3,
+                            separator=",",
+                            suppress_small=False,
+                        )
+                elif isinstance(value, (list, tuple)):
+                    value = np.array2string(
+                        np.asarray(value, dtype=np.float32),
+                        precision=3,
+                        separator=",",
+                        suppress_small=False,
+                    )
                 elif isinstance(value, numbers.Number):
                     pass
                 else:
@@ -423,10 +447,16 @@ class RecordVideo(gym.Wrapper):
             if env_id >= len(images):
                 continue
             success_frame_images = self._get_info_value(infos, "success_frame_images")
+            success_frame_raw_images = self._get_info_value(infos, "success_frame_raw_images")
+            success_frame_raw_tensors = self._get_info_value(infos, "success_frame_raw_tensors")
+            success_frame_meta = self._get_info_value(infos, "success_frame_meta")
             success_frame_wrist_images = self._get_info_value(infos, "success_frame_wrist_images")
             success_frame_time_idx = self._get_info_value(infos, "success_frame_time_idx")
             selected_time_idx = self._value_for_env(success_frame_time_idx, env_id)
             frame_value = self._value_for_env(success_frame_images, env_id)
+            raw_frame_value = self._value_for_env(success_frame_raw_images, env_id)
+            raw_tensor_value = self._value_for_env(success_frame_raw_tensors, env_id)
+            raw_meta_value = self._value_for_env(success_frame_meta, env_id)
             if frame_value is not None:
                 frame = self._to_numpy(frame_value)
                 if frame.dtype != np.uint8:
@@ -434,6 +464,24 @@ class RecordVideo(gym.Wrapper):
                 frame = frame.copy()
             else:
                 frame = images[env_id].copy()
+            if raw_frame_value is not None:
+                raw_frame = self._to_numpy(raw_frame_value)
+                if raw_frame.dtype != np.uint8:
+                    raw_frame = raw_frame.astype(np.uint8)
+                raw_frame = raw_frame.copy()
+            else:
+                raw_frame = frame.copy()
+            if torch is not None and isinstance(raw_tensor_value, torch.Tensor):
+                raw_tensor = raw_tensor_value.detach().cpu().to(torch.float32).contiguous()
+            elif raw_tensor_value is not None:
+                raw_tensor = torch.as_tensor(np.asarray(raw_tensor_value), dtype=torch.float32)
+            else:
+                raw_tensor = None
+            raw_meta = self._jsonable(raw_meta_value) if raw_meta_value is not None else {}
+            if isinstance(raw_meta, dict):
+                raw_meta.setdefault("env_id", int(env_id))
+                raw_meta.setdefault("video_idx", int(self.video_cnt))
+                raw_meta.setdefault("success_idx", int(self.success_image_cnt))
             if self.video_cfg.get("info_on_video", True):
                 task_desc = self._get_task_description(infos, env_id)
                 extras = [f"task: {task_desc}"] if task_desc else None
@@ -450,7 +498,16 @@ class RecordVideo(gym.Wrapper):
                     extras=extras,
                 )
             self.success_images.append(
-                (frame, self.video_cnt, env_id, self.success_image_cnt, "main")
+                {
+                    "image": frame,
+                    "video_idx": self.video_cnt,
+                    "env_id": env_id,
+                    "success_idx": self.success_image_cnt,
+                    "image_kind": "main",
+                    "raw_main_image": raw_frame,
+                    "raw_tensor": raw_tensor,
+                    "meta": raw_meta,
+                }
             )
             wrist_frame_value = self._value_for_env(success_frame_wrist_images, env_id)
             if wrist_frame_value is not None:
@@ -474,13 +531,13 @@ class RecordVideo(gym.Wrapper):
                         extras=extras,
                     )
                 self.success_images.append(
-                    (
-                        wrist_frame,
-                        self.video_cnt,
-                        env_id,
-                        self.success_image_cnt,
-                        "wrist",
-                    )
+                    {
+                        "image": wrist_frame,
+                        "video_idx": self.video_cnt,
+                        "env_id": env_id,
+                        "success_idx": self.success_image_cnt,
+                        "image_kind": "wrist",
+                    }
                 )
             self.success_image_cnt += 1
 
@@ -652,12 +709,40 @@ class RecordVideo(gym.Wrapper):
         if success_images:
             success_dir = os.path.join(output_dir, "success_once")
             os.makedirs(success_dir, exist_ok=True)
-            for image, video_idx, env_id, success_idx, image_kind in success_images:
+            for item in success_images:
+                image = item["image"]
+                video_idx = item["video_idx"]
+                env_id = item["env_id"]
+                success_idx = item["success_idx"]
+                image_kind = item["image_kind"]
                 png_path = os.path.join(
                     success_dir,
                     f"{video_idx}_env{env_id}_success_once_{success_idx}_{image_kind}.png",
                 )
                 self._submit_save_image(image, png_path)
+                if image_kind != "main":
+                    continue
+                raw_main_image = item.get("raw_main_image")
+                if raw_main_image is not None:
+                    raw_png_path = os.path.join(
+                        success_dir,
+                        f"{video_idx}_env{env_id}_success_once_{success_idx}_success_frame_raw_main.png",
+                    )
+                    self._submit_save_image(raw_main_image, raw_png_path)
+                raw_tensor = item.get("raw_tensor")
+                if raw_tensor is not None:
+                    raw_tensor_path = os.path.join(
+                        success_dir,
+                        f"{video_idx}_env{env_id}_success_once_{success_idx}_success_frame_raw_tensor.pt",
+                    )
+                    self._submit_save_tensor(raw_tensor, raw_tensor_path)
+                meta = item.get("meta")
+                if meta is not None:
+                    meta_path = os.path.join(
+                        success_dir,
+                        f"{video_idx}_env{env_id}_success_once_{success_idx}_success_frame_meta.json",
+                    )
+                    self._submit_save_json(meta, meta_path)
 
     def _submit_save(self, frames: list[np.ndarray], mp4_path: str) -> None:
         """Submit a background job to save the video."""
@@ -669,6 +754,18 @@ class RecordVideo(gym.Wrapper):
         """Submit a background job to save an image."""
         self._prune_futures()
         future = self._executor.submit(self._save_image, image, png_path)
+        self._save_futures.append(future)
+
+    def _submit_save_tensor(self, tensor: Any, tensor_path: str) -> None:
+        """Submit a background job to save a tensor."""
+        self._prune_futures()
+        future = self._executor.submit(self._save_tensor, tensor, tensor_path)
+        self._save_futures.append(future)
+
+    def _submit_save_json(self, payload: Any, json_path: str) -> None:
+        """Submit a background job to save a json file."""
+        self._prune_futures()
+        future = self._executor.submit(self._save_json, payload, json_path)
         self._save_futures.append(future)
 
     def _save_video(self, frames: list[np.ndarray], mp4_path: str) -> None:
@@ -690,6 +787,44 @@ class RecordVideo(gym.Wrapper):
             imageio.imwrite(png_path, image)
         except Exception as exc:
             warnings.warn(f"Failed to save image {png_path}: {exc}")
+
+    def _save_tensor(self, tensor: Any, tensor_path: str) -> None:
+        """Save a tensor artifact to disk (runs in background)."""
+        if torch is None:
+            warnings.warn(f"Failed to save tensor {tensor_path}: torch is unavailable")
+            return
+        try:
+            if not isinstance(tensor, torch.Tensor):
+                tensor = torch.as_tensor(np.asarray(tensor), dtype=torch.float32)
+            torch.save(tensor.detach().cpu(), tensor_path)
+        except Exception as exc:
+            warnings.warn(f"Failed to save tensor {tensor_path}: {exc}")
+
+    def _save_json(self, payload: Any, json_path: str) -> None:
+        """Save a json artifact to disk (runs in background)."""
+        try:
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(self._jsonable(payload), f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            warnings.warn(f"Failed to save json {json_path}: {exc}")
+
+    def _jsonable(self, value: Any) -> Any:
+        """Convert nested tensors/arrays/scalars into JSON-serializable values."""
+        if torch is not None and isinstance(value, torch.Tensor):
+            if value.ndim == 0:
+                return value.item()
+            return value.detach().cpu().tolist()
+        if isinstance(value, np.ndarray):
+            if value.ndim == 0:
+                return value.item()
+            return value.tolist()
+        if isinstance(value, dict):
+            return {str(k): self._jsonable(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._jsonable(v) for v in value]
+        if isinstance(value, np.generic):
+            return value.item()
+        return value
 
     def _prune_futures(self) -> None:
         """Remove finished futures to avoid unbounded growth."""

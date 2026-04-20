@@ -116,8 +116,6 @@ env:
       is_dummy: False
       controller_backend: "custom"
       controller_cls_path: "rlinf.envs.realworld.ur5.ur_rtde_controller:CustomUR5Controller"
-      robot_ip: ROBOT_IP
-      camera_serials: ["CAMERA_SERIAL1", "CAMERA_SERIAL2", "CAMERA_SERIAL3"]
       gripper_type: "robotiq"
       gripper_port: 63352
       tcp_offset: null
@@ -127,7 +125,7 @@ env:
   eval:
     total_num_envs: 1
     auto_reset: True
-    ignore_terminations: False
+    ignore_terminations: True
     max_episode_steps: 100
     max_steps_per_rollout_epoch: 100
     group_size: 1
@@ -139,8 +137,6 @@ env:
       is_dummy: False
       controller_backend: "custom"
       controller_cls_path: "rlinf.envs.realworld.ur5.ur_rtde_controller:CustomUR5Controller"
-      robot_ip: ROBOT_IP
-      camera_serials: ["CAMERA_SERIAL1", "CAMERA_SERIAL2", "CAMERA_SERIAL3"]
       gripper_type: "robotiq"
       gripper_port: 63352
       tcp_offset: null
@@ -156,7 +152,7 @@ rollout:
   pipeline_stage_num: 1
 
   model:
-    model_path: ${oc.env:REPO_PATH}/models/pi05_base_rlinf
+    model_path: /mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_book_sft_step3000_local
     precision: ${actor.model.precision}
 
 actor:
@@ -168,14 +164,15 @@ actor:
   enable_offload: False
 
   model:
-    model_path: ${oc.env:REPO_PATH}/models/pi05_base_rlinf
+    model_path: /mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_book_sft_step3000_local
     model_type: "openpi"
     action_dim: 7
     num_action_chunks: 10
     add_value_head: True
     num_steps: 5
     openpi:
-      config_name: "pi05_ur5_realworld"
+      config_name: "pi05_book"
+      norm_stats_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_book_sft_step3000_local/lerobot_book/norm_stats.json"
       num_images_in_input: 3
       value_after_vlm: True
       noise_method: "flow_noise"

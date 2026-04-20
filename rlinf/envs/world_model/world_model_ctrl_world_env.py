@@ -25,6 +25,7 @@ import torch
 import torch.nn.functional as F
 import torchvision.transforms as transforms
 
+from rlinf.data.datasets.lerobot_book import LeRobotBookTrajectoryDatasetWrapper
 from rlinf.data.datasets.lerobot_world_model import LeRobotTrajectoryDatasetWrapper
 from rlinf.data.datasets.world_model import NpyTrajectoryDatasetWrapper
 from rlinf.envs.utils import recursive_to_device
@@ -91,7 +92,7 @@ class CtrlWorldEnv(BaseWorldEnv):
         self.num_history = int(self.ctrl_world_cfg.get("num_history", 6))
         self.action_dim = int(self.ctrl_world_cfg.get("action_dim", 7))
         self.policy_action_type = str(
-            self.ctrl_world_cfg.get("policy_action_type", "absolute_eef")
+            self.ctrl_world_cfg.get("policy_action_type", "delta_eef")
         ).lower()
         self.policy_gripper_type = str(
             self.ctrl_world_cfg.get("policy_gripper_type", "passthrough")
@@ -103,6 +104,11 @@ class CtrlWorldEnv(BaseWorldEnv):
 
         self.main_view_index = int(self.ctrl_world_cfg.get("main_view_index", 1))
         self.wrist_view_index = int(self.ctrl_world_cfg.get("wrist_view_index", 2))
+        if self.main_view_index == self.wrist_view_index:
+            raise ValueError("main_view_index and wrist_view_index must be different")
+        self.extra_view_index = next(
+            idx for idx in range(3) if idx not in {self.main_view_index, self.wrist_view_index}
+        )
 
         self.num_inference_steps = int(self.ctrl_world_cfg.get("num_inference_steps", 50))
         self.decode_chunk_size = int(self.ctrl_world_cfg.get("decode_chunk_size", 7))
@@ -112,7 +118,6 @@ class CtrlWorldEnv(BaseWorldEnv):
         self.frame_level_cond = bool(self.ctrl_world_cfg.get("frame_level_cond", True))
         self.his_cond_zero = bool(self.ctrl_world_cfg.get("his_cond_zero", False))
         self.text_cond = bool(self.ctrl_world_cfg.get("text_cond", True))
-
         if not (0 <= self.main_view_index <= 2 and 0 <= self.wrist_view_index <= 2):
             raise ValueError("main_view_index and wrist_view_index must be in [0, 2]")
 
@@ -135,8 +140,11 @@ class CtrlWorldEnv(BaseWorldEnv):
         # rollout 过程中的状态缓存。
         self.current_obs = None
         self.current_wrist_obs = None
+        self.current_extra_view_obs = None
         self.current_latent = None
         self.history_latents = None
+        self.latest_dynamic_gammas = None
+        self.current_states = None
         self.action_history = torch.zeros(
             self.num_envs,
             self.num_history,
@@ -159,6 +167,8 @@ class CtrlWorldEnv(BaseWorldEnv):
         dataset_type = str(cfg.get("initial_image_dataset_type", "npy")).lower()
         if dataset_type == "lerobot":
             return LeRobotTrajectoryDatasetWrapper(cfg.initial_image_path)
+        if dataset_type == "lerobot_book":
+            return LeRobotBookTrajectoryDatasetWrapper(cfg.initial_image_path)
         if dataset_type == "npy":
             return NpyTrajectoryDatasetWrapper(
                 cfg.initial_image_path, enable_kir=cfg.get("enable_kir", False)
@@ -288,13 +298,13 @@ class CtrlWorldEnv(BaseWorldEnv):
         with open(stats_path, "r") as f:
             stats = json.load(f)
 
-        if "state_01" not in stats or "state_99" not in stats:
+        if "action_01" not in stats or "action_99" not in stats:
             raise ValueError(
-                f"Expected 'state_01' and 'state_99' in {stats_path}, got keys: {list(stats.keys())}"
+                f"Expected 'action_01' and 'action_99' in {stats_path}, got keys: {list(stats.keys())}"
             )
 
-        q01 = np.asarray(stats["state_01"], dtype=np.float32)
-        q99 = np.asarray(stats["state_99"], dtype=np.float32)
+        q01 = np.asarray(stats["action_01"], dtype=np.float32)
+        q99 = np.asarray(stats["action_99"], dtype=np.float32)
         return {"q01": q01, "q99": q99}
 
     def _normalize_action(self, actions: np.ndarray) -> np.ndarray:
@@ -314,46 +324,83 @@ class CtrlWorldEnv(BaseWorldEnv):
         )
         return np.clip(actions_norm, -1.0, 1.0)
 
-    def _convert_gripper_to_absolute(self, gripper_actions: np.ndarray) -> np.ndarray:
-        """Map policy gripper outputs to the absolute [0, 1] range expected by Ctrl-World."""
-        if self.policy_gripper_type == "passthrough":
-            return gripper_actions
-        if self.policy_gripper_type == "absolute_0_1":
-            return np.clip(gripper_actions, 0.0, 1.0)
-        if self.policy_gripper_type == "symmetric_11_to_01":
-            return np.clip((gripper_actions + 1.0) * 0.5, 0.0, 1.0)
-        raise ValueError(f"Unsupported policy_gripper_type: {self.policy_gripper_type}")
-
     def _convert_policy_actions_to_ctrl_world(self, actions_np: np.ndarray) -> np.ndarray:
-        """Convert policy actions to the absolute EEF pose sequence expected by Ctrl-World."""
-        if self.policy_action_type == "absolute_eef":
-            converted_actions = actions_np.copy()
-            converted_actions[..., -1] = self._convert_gripper_to_absolute(
-                converted_actions[..., -1]
+        """Convert policy outputs to the action format expected by Ctrl-World."""
+        if self.policy_action_type not in {"delta_eef", "absolute_eef"}:
+            raise ValueError(
+                f"Unsupported policy_action_type: {self.policy_action_type}. "
+                "Expected one of {'delta_eef', 'absolute_eef'}."
             )
-            return converted_actions
-
-        if self.policy_action_type != "delta_eef":
-            raise ValueError(f"Unsupported policy_action_type: {self.policy_action_type}")
 
         if self.action_dim < 7:
             raise ValueError(
-                f"delta_eef conversion expects action_dim >= 7, got {self.action_dim}"
+                f"{self.policy_action_type} conversion expects action_dim >= 7, got {self.action_dim}"
             )
 
-        converted_actions = np.zeros_like(actions_np, dtype=np.float32)
-        base_pose = self.action_history[:, -1, :].detach().cpu().numpy().astype(np.float32)
+        return actions_np.astype(np.float32, copy=True)
 
-        pose_deltas = actions_np[..., :6]
-        converted_actions[..., :6] = (
-            np.cumsum(pose_deltas, axis=1) + base_pose[:, None, :6]
+    def _build_initial_action_history(
+        self, current_states: torch.Tensor, num_reset_envs: int
+    ) -> torch.Tensor:
+        """Initialize action history in the same action convention as Ctrl-World training."""
+        init_actions = torch.zeros(
+            (num_reset_envs, self.action_dim), device=self.device, dtype=torch.float32
         )
-        converted_actions[..., 6] = self._convert_gripper_to_absolute(actions_np[..., 6])
 
-        if self.action_dim > 7:
-            converted_actions[..., 7:] = actions_np[..., 7:]
+        if self.policy_action_type == "absolute_eef":
+            state_action_dim = min(current_states.shape[1], self.action_dim)
+            init_actions[:, :state_action_dim] = current_states[:, :state_action_dim]
 
-        return converted_actions
+        return init_actions.unsqueeze(1).repeat(1, self.num_history, 1)
+
+    def _update_current_states(self, last_action: torch.Tensor, num_envs: int) -> None:
+        """Update cached policy states according to the configured action convention."""
+        if self.current_states is None:
+            state_dim = max(self.action_dim, 8 if self.policy_action_type == "delta_eef" else 7)
+            self.current_states = torch.zeros(
+                (num_envs, state_dim), device=self.device, dtype=torch.float32
+            )
+
+        pose_dim = min(6, self.current_states.shape[1], last_action.shape[1])
+        if self.policy_action_type == "delta_eef":
+            self.current_states[:, :pose_dim] = (
+                self.current_states[:, :pose_dim] + last_action[:, :pose_dim]
+            )
+        elif self.policy_action_type == "absolute_eef":
+            self.current_states[:, :pose_dim] = last_action[:, :pose_dim]
+        else:
+            raise ValueError(f"Unsupported policy_action_type: {self.policy_action_type}")
+
+        if self.current_states.shape[1] >= 8 and last_action.shape[1] >= 7:
+            if self.policy_action_type == "absolute_eef":
+                next_finger_pos = last_action[:, 6:7]
+            else:
+                gripper_state_scale = self.current_states[:, 6:8].abs().mean(
+                    dim=1, keepdim=True
+                )
+                gripper_state_scale = torch.clamp(
+                    gripper_state_scale, min=0.04
+                ).to(last_action.dtype)
+                gripper_cmd = torch.sign(torch.clamp(last_action[:, 6:7], -1.0, 1.0))
+                next_finger_pos = torch.where(
+                    gripper_cmd > 0,
+                    gripper_state_scale,
+                    torch.where(
+                        gripper_cmd < 0,
+                        -gripper_state_scale,
+                        self.current_states[:, 6:7],
+                    ),
+                )
+
+            self.current_states[:, 6:7] = next_finger_pos
+            self.current_states[:, 7:8] = -next_finger_pos
+        elif self.current_states.shape[1] >= 7 and last_action.shape[1] >= 7:
+            if self.policy_action_type == "absolute_eef":
+                self.current_states[:, 6:7] = last_action[:, 6:7]
+            else:
+                self.current_states[:, 6:7] = torch.sign(
+                    torch.clamp(last_action[:, 6:7], -1.0, 1.0)
+                )
 
     def _init_metrics(self):
         self.elapsed_steps = torch.zeros(
@@ -421,6 +468,61 @@ class CtrlWorldEnv(BaseWorldEnv):
         max_reward_in_chunk = chunk_rewards.max(dim=1)[0]
         success_estimated = max_reward_in_chunk >= success_threshold
         return success_estimated.to(self.device)
+
+    def _compute_dynamic_gammas(
+        self,
+        pred_latents: torch.Tensor,
+        prev_current_latent: Optional[torch.Tensor],
+        prev_history_latents: Optional[torch.Tensor],
+    ) -> Optional[torch.Tensor]:
+        """Build per-step dynamic gammas from final Ctrl-World latents."""
+        if not bool(self.cfg.get("dynamic_gamma_enabled", False)):
+            return None
+        if prev_current_latent is None or prev_history_latents is None:
+            raise ValueError(
+                "dynamic gamma requires current_latent and history_latents to be initialized"
+            )
+
+        gamma_base = float(self.cfg.get("dynamic_gamma_base", 0.98))
+        gamma_min = float(self.cfg.get("dynamic_gamma_min", 0.9))
+        gamma_max = float(self.cfg.get("dynamic_gamma_max", 1.0))
+        delta_weight = float(self.cfg.get("dynamic_gamma_delta_weight", 0.01))
+        gap_weight = float(self.cfg.get("dynamic_gamma_gap_weight", 0.02))
+        norm_eps = 1e-6
+
+        pred_latents = pred_latents.detach().to(torch.float32)
+        prev_current_latent = prev_current_latent.detach().to(torch.float32)
+        prev_history_latents = prev_history_latents.detach().to(torch.float32)
+
+        prev_step_latents = torch.cat(
+            [prev_current_latent.unsqueeze(1), pred_latents[:, :-1]], dim=1
+        )
+        latent_delta_norm = (pred_latents - prev_step_latents).pow(2).mean(
+            dim=(2, 3, 4)
+        ).sqrt()
+
+        history_anchor = prev_history_latents[:, -1].unsqueeze(1).expand_as(pred_latents)
+        history_gap_norm = (pred_latents - history_anchor).pow(2).mean(
+            dim=(2, 3, 4)
+        ).sqrt()
+
+        latent_delta_norm = latent_delta_norm / latent_delta_norm.mean(
+            dim=1, keepdim=True
+        ).clamp_min(norm_eps)
+        history_gap_norm = history_gap_norm / history_gap_norm.mean(
+            dim=1, keepdim=True
+        ).clamp_min(norm_eps)
+
+        # Center normalized features so gamma_base remains the default operating point.
+        score_t = delta_weight * (latent_delta_norm - 1.0) - gap_weight * (
+            history_gap_norm - 1.0
+        )
+        dynamic_gammas = torch.clamp(
+            gamma_base + score_t,
+            min=gamma_min,
+            max=gamma_max,
+        )
+        return dynamic_gammas.to(torch.float32)
 
     def update_reset_state_ids(self):
         """每个 group 采样一个 reset episode id，并复制给组内成员。"""
@@ -504,6 +606,7 @@ class CtrlWorldEnv(BaseWorldEnv):
             if self.use_fixed_reset_state_ids:
                 episode_indices = self.reset_state_ids
             self._is_start = False
+        self.latest_dynamic_gammas = None
 
         num_reset_envs = int(target_env_idx.numel())
         if len(self.dataset) < num_reset_envs:
@@ -531,6 +634,7 @@ class CtrlWorldEnv(BaseWorldEnv):
 
         main_imgs = []
         wrist_imgs = []
+        extra_view_imgs = []
         full_imgs = []
         task_descriptions = []
         init_ee_poses = []
@@ -569,9 +673,11 @@ class CtrlWorldEnv(BaseWorldEnv):
             full_img = torch.cat(normalized_views, dim=1)
             selected_main_view = normalized_views[self.main_view_index]
             selected_wrist_view = normalized_views[self.wrist_view_index]
+            selected_extra_view = normalized_views[self.extra_view_index]
 
             main_imgs.append(selected_main_view)
             wrist_imgs.append(selected_wrist_view)
+            extra_view_imgs.append(selected_extra_view)
             full_imgs.append(full_img)
 
             if "observation.state" in first_frame:
@@ -588,6 +694,10 @@ class CtrlWorldEnv(BaseWorldEnv):
         stacked_wrist = stacked_wrist.unsqueeze(2).unsqueeze(3).repeat(
             1, 1, 1, self.condition_frame_length, 1, 1
         )
+        stacked_extra_view = torch.stack(extra_view_imgs, dim=0).to(self.device)
+        stacked_extra_view = stacked_extra_view.unsqueeze(2).unsqueeze(3).repeat(
+            1, 1, 1, self.condition_frame_length, 1, 1
+        )
 
         full_images = torch.stack(full_imgs, dim=0).to(self.device, self.inference_dtype)
         current_latent = self._encode_full_image_to_latent(full_images)
@@ -596,34 +706,46 @@ class CtrlWorldEnv(BaseWorldEnv):
             1, self.num_history, 1, 1, 1
         )
 
-        init_actions = []
+        init_states = []
+        state_dim = 0
         for init_ee_pose in init_ee_poses:
             if init_ee_pose is None:
-                init_action = np.zeros(self.action_dim, dtype=np.float32)
+                init_state = np.zeros(7, dtype=np.float32)
             else:
-                init_action = np.asarray(init_ee_pose, dtype=np.float32).reshape(-1)
-                if init_action.shape[0] < self.action_dim:
-                    init_action = np.pad(init_action, (0, self.action_dim - init_action.shape[0]))
-                elif init_action.shape[0] > self.action_dim:
-                    init_action = init_action[: self.action_dim]
-            init_actions.append(init_action)
-
-        init_actions = torch.from_numpy(np.stack(init_actions, axis=0)).to(self.device)
-        action_history = init_actions.unsqueeze(1).repeat(1, self.num_history, 1)
+                init_state = np.asarray(init_ee_pose, dtype=np.float32).reshape(-1)
+                if init_state.shape[0] < 7:
+                    init_state = np.pad(init_state, (0, 7 - init_state.shape[0]))
+            state_dim = max(state_dim, init_state.shape[0])
+            init_states.append(init_state)
+        state_dim = max(state_dim, 7)
+        if self.policy_action_type == "delta_eef":
+            state_dim = max(state_dim, 8)
+        init_states = [
+            np.pad(state, (0, state_dim - state.shape[0])) if state.shape[0] < state_dim else state[:state_dim]
+            for state in init_states
+        ]
+        current_states = torch.from_numpy(np.stack(init_states, axis=0)).to(
+            self.device, torch.float32
+        )
+        action_history = self._build_initial_action_history(current_states, num_reset_envs)
 
         if env_idx is None or self.current_obs is None:
             self.current_obs = stacked_main
             self.current_wrist_obs = stacked_wrist
+            self.current_extra_view_obs = stacked_extra_view
             self.current_latent = current_latent
             self.history_latents = history_latents
+            self.current_states = current_states
             self.action_history = action_history
             self.task_descriptions = task_descriptions
             self.init_ee_poses = init_ee_poses
         else:
             self.current_obs[target_env_idx] = stacked_main
             self.current_wrist_obs[target_env_idx] = stacked_wrist
+            self.current_extra_view_obs[target_env_idx] = stacked_extra_view
             self.current_latent[target_env_idx] = current_latent
             self.history_latents[target_env_idx] = history_latents
+            self.current_states[target_env_idx] = current_states
             self.action_history[target_env_idx] = action_history
             target_env_idx_list = target_env_idx.tolist()
             for local_i, global_i in enumerate(target_env_idx_list):
@@ -653,6 +775,8 @@ class CtrlWorldEnv(BaseWorldEnv):
         extract_chunk_obs = extract_chunk_obs[:, -self.chunk :, :, :, :, :]
         extract_chunk_obs = extract_chunk_obs.reshape(self.num_envs * self.chunk, 3, 1, *self.image_size)
         extract_chunk_obs = extract_chunk_obs.squeeze(2).to(self.device)
+
+        # return torch.zeros((self.num_envs, self.chunk), dtype=torch.float32, device=self.device)
 
         reward_cfg = self.ctrl_world_cfg.get("reward_model", self.cfg.get("reward_model", None))
         if reward_cfg.type == "ResnetRewModel":
@@ -693,6 +817,9 @@ class CtrlWorldEnv(BaseWorldEnv):
             .to(self.inference_dtype)
         )
 
+        prev_current_latent = self.current_latent
+        prev_history_latents = self.history_latents
+
         # 构造文本/动作条件 token，并在 latent 空间执行扩散推理。
         with torch.no_grad():
             if self.text_cond:
@@ -726,6 +853,11 @@ class CtrlWorldEnv(BaseWorldEnv):
             )
 
         pred_latents = pred_latents.to(self.device, self.inference_dtype)
+        self.latest_dynamic_gammas = self._compute_dynamic_gammas(
+            pred_latents,
+            prev_current_latent,
+            prev_history_latents,
+        )
 
         # 仅保留最后一帧 latent 作为当前状态，并滑动更新历史窗口。
         self.current_latent = pred_latents[:, -1].detach()
@@ -740,23 +872,32 @@ class CtrlWorldEnv(BaseWorldEnv):
         self.action_history = torch.cat(
             [self.action_history[:, 1:], last_action.unsqueeze(1)], dim=1
         )
+        self._update_current_states(last_action, num_envs)
 
         # 解码生成的 chunk，并追加到观测历史中。
         views = self._decode_latents_to_views(pred_latents)
 
         main_video = views[self.main_view_index].permute(0, 2, 1, 3, 4)  # [B,3,T,H,W]
         wrist_video = views[self.wrist_view_index].permute(0, 2, 1, 3, 4)
+        extra_view_video = views[self.extra_view_index].permute(0, 2, 1, 3, 4)
 
         x_main = main_video.unsqueeze(2)   # [B,3,1,T,H,W]
         x_wrist = wrist_video.unsqueeze(2) # [B,3,1,T,H,W]
+        x_extra = extra_view_video.unsqueeze(2)  # [B,3,1,T,H,W]
 
         self.current_obs = torch.cat([self.current_obs, x_main], dim=3)
         self.current_wrist_obs = torch.cat([self.current_wrist_obs, x_wrist], dim=3)
+        self.current_extra_view_obs = torch.cat(
+            [self.current_extra_view_obs, x_extra], dim=3
+        )
 
         max_frames = self.condition_frame_length + self.chunk * 2
         if self.current_obs.shape[3] > max_frames:
             self.current_obs = self.current_obs[:, :, :, -max_frames:, :, :]
             self.current_wrist_obs = self.current_wrist_obs[:, :, :, -max_frames:, :, :]
+            self.current_extra_view_obs = self.current_extra_view_obs[
+                :, :, :, -max_frames:, :, :
+            ]
 
     def _wrap_obs(self):
         """将内部归一化张量转换为策略侧使用的 uint8 观测。"""
@@ -778,11 +919,22 @@ class CtrlWorldEnv(BaseWorldEnv):
             wrist_image = (wrist_image + 1.0) / 2.0 * 255.0
             wrist_image = torch.clamp(wrist_image, 0, 255).to(torch.uint8)
 
-        states = torch.zeros((num_envs, 16), device=self.device, dtype=torch.float32)
+        extra_view_image = None
+        if self.current_extra_view_obs is not None:
+            extra_view_last = self.current_extra_view_obs[:, :, 0, -1, :, :]
+            extra_view_image = extra_view_last.permute(0, 2, 3, 1)
+            extra_view_image = (extra_view_image + 1.0) / 2.0 * 255.0
+            extra_view_image = torch.clamp(extra_view_image, 0, 255).to(torch.uint8)
+
+        if self.current_states is None:
+            states = torch.zeros((num_envs, 8), device=self.device, dtype=torch.float32)
+        else:
+            states = self.current_states.to(device=self.device, dtype=torch.float32)
 
         obs = {
             "main_images": main_image,
             "wrist_images": wrist_image,
+            "extra_view_images": extra_view_image,
             "states": states,
             "task_descriptions": self.task_descriptions,
         }
@@ -812,8 +964,12 @@ class CtrlWorldEnv(BaseWorldEnv):
         extracted_obs, infos = self.reset(env_idx=done_env_idx)
         for key in (
             "chunk_raw_rewards",
+            "dynamic_gammas",
             "success_frame_time_idx",
             "success_frame_images",
+            "success_frame_raw_images",
+            "success_frame_raw_tensors",
+            "success_frame_meta",
             "success_frame_wrist_images",
         ):
             if key in final_info:
@@ -839,6 +995,15 @@ class CtrlWorldEnv(BaseWorldEnv):
             `([obs], rewards, terminations, truncations, [infos])`。
         """
         self.onload()
+        if isinstance(policy_output_action, torch.Tensor):
+            policy_actions_for_video = policy_output_action.detach().to(
+                device=self.device, dtype=torch.float32
+            )
+        else:
+            policy_actions_for_video = torch.as_tensor(
+                policy_output_action, device=self.device, dtype=torch.float32
+            )
+
         with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
             self._infer_next_chunk_frames(policy_output_action)
 
@@ -871,11 +1036,43 @@ class CtrlWorldEnv(BaseWorldEnv):
         past_truncations = raw_chunk_truncations.any(dim=1)
         past_dones = torch.logical_or(past_terminations, past_truncations)
         success_frame_time_idx = chunk_rewards.argmax(dim=1)
+        latest_chunk_main_tensors = self.current_obs[:, :, 0, -self.chunk :, :, :]
+        latest_chunk_main_tensors = latest_chunk_main_tensors.permute(0, 2, 1, 3, 4).contiguous()
         latest_chunk_main_images = self._get_latest_chunk_main_images()
         latest_chunk_wrist_images = self._get_latest_chunk_wrist_images()
         success_frame_images = latest_chunk_main_images[
             torch.arange(self.num_envs, device=self.device), success_frame_time_idx
         ]
+        success_frame_raw_tensors = latest_chunk_main_tensors[
+            torch.arange(self.num_envs, device=self.device), success_frame_time_idx
+        ].detach().to(torch.float32).cpu()
+        success_frame_raw_images = success_frame_raw_tensors.permute(0, 2, 3, 1)
+        success_frame_raw_images = torch.clamp(
+            (success_frame_raw_images + 1.0) / 2.0 * 255.0, 0, 255
+        ).to(torch.uint8)
+        success_frame_meta = []
+        success_threshold = float(getattr(self.cfg, "success_reward_threshold", 0.9))
+        chunk_rewards_cpu = chunk_rewards.detach().to(torch.float32).cpu()
+        success_frame_time_idx_cpu = success_frame_time_idx.detach().cpu()
+        estimated_success_cpu = estimated_success.detach().cpu()
+        elapsed_steps_cpu = self.elapsed_steps.detach().cpu()
+        for env_id in range(self.num_envs):
+            frame_idx = int(success_frame_time_idx_cpu[env_id].item())
+            chunk_rewards_env = chunk_rewards_cpu[env_id]
+            success_frame_meta.append(
+                {
+                    "env_id": env_id,
+                    "elapsed_steps": int(elapsed_steps_cpu[env_id].item()),
+                    "success_frame_time_idx": frame_idx,
+                    "selected_frame_reward": float(chunk_rewards_env[frame_idx].item()),
+                    "max_reward_in_chunk": float(chunk_rewards_env.max().item()),
+                    "chunk_raw_rewards": [
+                        float(reward_value) for reward_value in chunk_rewards_env.tolist()
+                    ],
+                    "success_reward_threshold": success_threshold,
+                    "success_estimated": bool(estimated_success_cpu[env_id].item()),
+                }
+            )
         success_frame_wrist_images = None
         if latest_chunk_wrist_images is not None:
             success_frame_wrist_images = latest_chunk_wrist_images[
@@ -886,9 +1083,15 @@ class CtrlWorldEnv(BaseWorldEnv):
         infos = self._record_metrics(
             chunk_rewards_tensors.sum(dim=1), past_terminations, {}
         )
+        infos["policy_action"] = policy_actions_for_video
+        infos["policy_action_last"] = policy_actions_for_video[:, -1, :]
         infos["chunk_raw_rewards"] = chunk_rewards
+        infos["dynamic_gammas"] = self.latest_dynamic_gammas
         infos["success_frame_time_idx"] = success_frame_time_idx
         infos["success_frame_images"] = success_frame_images
+        infos["success_frame_raw_images"] = success_frame_raw_images
+        infos["success_frame_raw_tensors"] = success_frame_raw_tensors
+        infos["success_frame_meta"] = success_frame_meta
         infos["success_frame_wrist_images"] = success_frame_wrist_images
 
         if past_dones.any() and self.auto_reset:
@@ -920,6 +1123,10 @@ class CtrlWorldEnv(BaseWorldEnv):
         self.current_wrist_obs = recursive_to_device(self.current_wrist_obs, "cpu")
         self.current_latent = recursive_to_device(self.current_latent, "cpu")
         self.history_latents = recursive_to_device(self.history_latents, "cpu")
+        self.latest_dynamic_gammas = recursive_to_device(
+            self.latest_dynamic_gammas, "cpu"
+        )
+        self.current_states = recursive_to_device(self.current_states, "cpu")
         self.action_history = self.action_history.cpu()
 
         self.elapsed_steps = self.elapsed_steps.cpu()
@@ -944,6 +1151,10 @@ class CtrlWorldEnv(BaseWorldEnv):
         self.current_wrist_obs = recursive_to_device(self.current_wrist_obs, self.device)
         self.current_latent = recursive_to_device(self.current_latent, self.device)
         self.history_latents = recursive_to_device(self.history_latents, self.device)
+        self.latest_dynamic_gammas = recursive_to_device(
+            self.latest_dynamic_gammas, self.device
+        )
+        self.current_states = recursive_to_device(self.current_states, self.device)
         self.action_history = self.action_history.to(self.device)
 
         self.elapsed_steps = self.elapsed_steps.to(self.device)
@@ -969,6 +1180,9 @@ class CtrlWorldEnv(BaseWorldEnv):
             else None,
             "history_latents": recursive_to_device(self.history_latents, "cpu")
             if self.history_latents is not None
+            else None,
+            "current_states": recursive_to_device(self.current_states, "cpu")
+            if self.current_states is not None
             else None,
             "action_history": self.action_history.cpu(),
             "task_descriptions": self.task_descriptions,
@@ -1014,6 +1228,11 @@ class CtrlWorldEnv(BaseWorldEnv):
         self.history_latents = (
             recursive_to_device(state["history_latents"], self.device)
             if state["history_latents"] is not None
+            else None
+        )
+        self.current_states = (
+            recursive_to_device(state["current_states"], self.device)
+            if state.get("current_states") is not None
             else None
         )
         self.action_history = state["action_history"].to(self.device)

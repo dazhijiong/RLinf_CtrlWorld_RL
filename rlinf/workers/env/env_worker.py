@@ -346,6 +346,7 @@ class EnvWorker(Worker):
             if "final_observation" in infos
             else None,
             rewards=chunk_rewards,
+            dynamic_gammas=infos.get("dynamic_gammas"),
             dones=chunk_dones,
             terminations=chunk_terminations,
             truncations=chunk_truncations,
@@ -753,6 +754,7 @@ class EnvWorker(Worker):
                         truncations=env_output.truncations,
                         terminations=env_output.terminations,
                         rewards=rewards,
+                        dynamic_gammas=env_output.dynamic_gammas,
                     )
                     self.rollout_results[stage_id].append_step_result(chunk_step_result)
                     if rollout_result.save_flags is not None:
@@ -804,6 +806,7 @@ class EnvWorker(Worker):
                     truncations=env_output.truncations,
                     terminations=env_output.terminations,
                     rewards=rewards,
+                    dynamic_gammas=env_output.dynamic_gammas,
                 )
                 self.rollout_results[stage_id].append_step_result(chunk_step_result)
 

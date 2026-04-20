@@ -1,7 +1,7 @@
 defaults:
-  - experiment/ctrl_world_success_fm_pi05@exp
-  - env/ctrl_world_libero_spatial@env.train
-  - env/ctrl_world_libero_spatial@env.eval
+  - experiment/ctrl_world_open_book_success_fm_pi05@exp
+  - env/ctrl_world_open_book@env.train
+  - env/ctrl_world_open_book@env.eval
   - model/pi0_5@actor.model
   - training_backend/fsdp@actor.fsdp_config
   - override hydra/job_logging: stdout
@@ -15,10 +15,9 @@ hydra:
     - file://${oc.env:EMBODIED_PATH}/config/
 
 cluster:
-  num_nodes: ${exp.cluster.num_nodes}
+  num_nodes: 2
   component_placement:
-    env, rollout: ${exp.cluster.component_placement.env_rollout}
-    actor: ${exp.cluster.component_placement.actor}
+    actor, env, rollout: all
 
 runner:
   task_type: embodied
@@ -123,14 +122,14 @@ env:
       his_cond_zero: ${exp.ctrl_world.his_cond_zero}
       policy_action_type: ${exp.ctrl_world.policy_action_type}
       policy_gripper_type: ${exp.ctrl_world.policy_gripper_type}
-    enable_offload: False
+    enable_offload: True
 
 rollout:
   group_name: "RolloutGroup"
   generation_backend: "huggingface"
   recompute_logprobs: False
   unnorm_key: libero_10
-  enable_offload: False
+  enable_offload: True
   pipeline_stage_num: 1
   enable_cuda_graph: False
   collect_prev_infos: False
@@ -145,7 +144,7 @@ actor:
   micro_batch_size: ${exp.optim.micro_batch_size}
   global_batch_size: ${exp.optim.global_batch_size}
   seed: ${exp.optim.seed}
-  enable_offload: False
+  enable_offload: True
 
   model:
     model_path: ${exp.paths.policy_model_path}
@@ -154,8 +153,8 @@ actor:
     num_steps: ${exp.optim.num_steps}
 
     openpi:
-      config_name: "pi05_libero"
-      num_images_in_input: 2
+      config_name: "pi05_book"
+      num_images_in_input: 3
       add_libero_prompt_prefix: False
 
   optim:
@@ -170,6 +169,7 @@ actor:
   fsdp_config:
     strategy: "fsdp"
     sharding_strategy: "no_shard"
+    cpu_offload: True
     gradient_checkpointing: False
     mixed_precision:
       param_dtype: ${actor.model.precision}

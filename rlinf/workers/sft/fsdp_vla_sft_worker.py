@@ -31,6 +31,9 @@ class FSDPVlaSftWorker(FSDPSftWorker):
         if SupportedModel(self.cfg.actor.model.model_type) in [SupportedModel.OPENPI]:
             import openpi.training.data_loader as openpi_data_loader
 
+            from rlinf.models.embodiment.openpi.book_video_data_loader import (
+                create_book_data_loader,
+            )
             from rlinf.models.embodiment.openpi.dataconfig import get_openpi_config
 
             config = get_openpi_config(
@@ -39,9 +42,14 @@ class FSDPVlaSftWorker(FSDPSftWorker):
                 batch_size=self.cfg.actor.micro_batch_size * self._world_size,
                 data_kwargs=getattr(self.cfg.actor, "openpi_data", None),
             )
-            data_loader = openpi_data_loader.create_data_loader(
-                config, framework="pytorch", shuffle=True
-            )
+            if self.cfg.actor.model.openpi.config_name == "pi05_book":
+                data_loader = create_book_data_loader(
+                    config, framework="pytorch", shuffle=True
+                )
+            else:
+                data_loader = openpi_data_loader.create_data_loader(
+                    config, framework="pytorch", shuffle=True
+                )
             return data_loader, data_loader.data_config()
         elif SupportedModel(self.cfg.actor.model.model_type) in [
             SupportedModel.LINGBOTVLA

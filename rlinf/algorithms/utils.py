@@ -68,6 +68,7 @@ def preprocess_embodied_advantages_inputs(
     rewards: torch.Tensor,
     dones: torch.Tensor,
     values: Optional[torch.Tensor] = None,
+    dynamic_gammas: Optional[torch.Tensor] = None,
     loss_mask: Optional[torch.Tensor] = None,
     loss_mask_sum: Optional[torch.Tensor] = None,
     **kwargs,
@@ -81,6 +82,8 @@ def preprocess_embodied_advantages_inputs(
         # rewards, dones, loss_mask, loss_mask_sum: [n_chunk_steps, bsz, num_action_chunks] -> [n_chunk_steps, bsz, 1]
         rewards = rewards.sum(dim=-1, keepdim=True)
         dones = dones.max(dim=-1, keepdim=True)[0]
+        if dynamic_gammas is not None:
+            dynamic_gammas = dynamic_gammas.mean(dim=-1, keepdim=True)
         if loss_mask is not None:
             loss_mask = loss_mask.max(dim=-1, keepdim=True)[0]
         if loss_mask_sum is not None:
@@ -101,6 +104,8 @@ def preprocess_embodied_advantages_inputs(
     # Reshape -> [n_steps, bsz]
     # Rewards [n_steps, bsz]
     rewards = rewards.transpose(1, 2).reshape(n_steps, bsz)
+    if dynamic_gammas is not None:
+        dynamic_gammas = dynamic_gammas.transpose(1, 2).reshape(n_steps, bsz)
 
     # Loss Mask (T steps) [bsz, n_steps]
     if loss_mask is not None:
@@ -123,6 +128,7 @@ def preprocess_embodied_advantages_inputs(
             "rewards": rewards,
             "dones": dones,
             "values": values,
+            "dynamic_gammas": dynamic_gammas,
             "loss_mask": loss_mask,
             "loss_mask_sum": loss_mask_sum,
         }

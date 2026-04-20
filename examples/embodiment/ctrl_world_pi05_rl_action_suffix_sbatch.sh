@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-#SBATCH -J rlinf_ctrl_world_pi05_success_fm
+#SBATCH -J rlinf_ctrl_world_pi05_rl_action_suffix
 #SBATCH -A naiss2025-22-1173
-#SBATCH --output=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/ctrl_world_pi05_success_fm_out_%j.txt
-#SBATCH --error=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/ctrl_world_pi05_success_fm_err_%j.txt
+#SBATCH --output=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/ctrl_world_pi05_rl_action_suffix_out_%j.txt
+#SBATCH --error=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/ctrl_world_pi05_rl_action_suffix_err_%j.txt
 #SBATCH --nodes=2
 #SBATCH --gpus-per-node=A100:4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=12
-#SBATCH --time=10:00:00
+#SBATCH --time=12:00:00
 #SBATCH -p alvis
 
 set -euo pipefail
@@ -37,25 +37,10 @@ module load git-lfs/3.6.1
 # ----------------------------
 # Editable runtime parameters
 # ----------------------------
-CONFIG_NAME="${CONFIG_NAME:-ctrl_world_libero_spatial_success_fm_openpi_pi05}"
-
+CONFIG_NAME="${CONFIG_NAME:-ctrl_world_libero_spatial_grpo_openpi_pi05_action_suffix}"
 VENV_PATH="${VENV_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/.venv_pi05}"
 CTRL_WORLD_PATH="${CTRL_WORLD_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World}"
 LIBERO_REPO_PATH="${LIBERO_REPO_PATH:-${VENV_PATH}/libero}"
-
-POLICY_MODEL_PATH="${POLICY_MODEL_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_libero_sft_train20_step2000_local}"
-INITIAL_IMAGE_PATH="${INITIAL_IMAGE_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/datasets/lerobot_libero_spatial_image}"
-REWARD_MODEL_PATH="${REWARD_MODEL_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/RLinf-OpenSora-LIBERO-Spatial/resnet_rm.pth}"
-CTRL_WORLD_CKPT_PATH="${CTRL_WORLD_CKPT_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World/model_ckpt/doird_subset/checkpoint-10000.pt}"
-RESUME_DIR="${RESUME_DIR:-}"
-
-MUJOCO_GL="${MUJOCO_GL:-egl}"
-PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
-PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:False}"
-ROBOT_PLATFORM="${ROBOT_PLATFORM:-LIBERO}"
-TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
-WANDB_MODE="${WANDB_MODE:-offline}"
-
 if [[ -f "${VENV_PATH}/bin/activate" ]]; then
   # shellcheck disable=SC1090
   source "${VENV_PATH}/bin/activate"
@@ -78,13 +63,16 @@ fi
 export EMBODIED_PATH="${REPO_PATH}/examples/embodiment"
 export CTRL_WORLD_PATH
 export LIBERO_REPO_PATH
-export MUJOCO_GL
-export PYOPENGL_PLATFORM
-export PYTORCH_CUDA_ALLOC_CONF
-export ROBOT_PLATFORM
-export TOKENIZERS_PARALLELISM
+export MUJOCO_GL="${MUJOCO_GL:-egl}"
+export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:False}"
+export ROBOT_PLATFORM="${ROBOT_PLATFORM:-LIBERO}"
+export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export PYTHONPATH="${REPO_PATH}:${LIBERO_REPO_PATH}:${PYTHONPATH:-}"
-export WANDB_MODE
+
+# Weights & Biases auth (hardcoded key as requested)
+export WANDB_API_KEY='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'
+export WANDB_MODE="${WANDB_MODE:-online}"
 
 if [[ ! -d "${CTRL_WORLD_PATH}" ]]; then
   echo "CTRL_WORLD_PATH does not exist: ${CTRL_WORLD_PATH}" >&2
@@ -94,15 +82,6 @@ if [[ ! -d "${LIBERO_REPO_PATH}" ]]; then
   echo "LIBERO_REPO_PATH does not exist: ${LIBERO_REPO_PATH}" >&2
   exit 1
 fi
-if [[ ! -f "${CTRL_WORLD_CKPT_PATH}" ]]; then
-  echo "CTRL_WORLD_CKPT_PATH does not exist: ${CTRL_WORLD_CKPT_PATH}" >&2
-  exit 1
-fi
-if [[ -n "${RESUME_DIR}" && ! -d "${RESUME_DIR}" ]]; then
-  echo "RESUME_DIR does not exist: ${RESUME_DIR}" >&2
-  exit 1
-fi
-
 TIMESTAMP="$(date +'%Y%m%d-%H%M%S')"
 LOG_DIR="${REPO_PATH}/logs/${TIMESTAMP}-${CONFIG_NAME}-job${SLURM_JOB_ID}"
 LOG_FILE="${LOG_DIR}/run_embodiment.log"
@@ -172,16 +151,7 @@ CMD=(
   --config-name "${CONFIG_NAME}"
   "runner.logger.log_path=${LOG_DIR}"
   "cluster.num_nodes=${NUM_NODES}"
-  "exp.paths.ctrl_world_repo_path=${CTRL_WORLD_PATH}"
-  "exp.paths.ctrl_world_ckpt_path=${CTRL_WORLD_CKPT_PATH}"
-  "exp.paths.initial_image_path=${INITIAL_IMAGE_PATH}"
-  "exp.paths.reward_model_path=${REWARD_MODEL_PATH}"
-  "exp.paths.policy_model_path=${POLICY_MODEL_PATH}"
 )
-
-if [[ -n "${RESUME_DIR}" ]]; then
-  CMD+=("runner.resume_dir=${RESUME_DIR}")
-fi
 
 if [[ $# -gt 0 ]]; then
   CMD+=("$@")
@@ -198,14 +168,9 @@ export TRAIN_CMD_STR
   echo "Using Python at ${PYTHON_BIN}"
   echo "CONFIG_NAME=${CONFIG_NAME}"
   echo "CTRL_WORLD_PATH=${CTRL_WORLD_PATH}"
-  echo "CTRL_WORLD_CKPT_PATH=${CTRL_WORLD_CKPT_PATH}"
-  echo "INITIAL_IMAGE_PATH=${INITIAL_IMAGE_PATH}"
-  echo "REWARD_MODEL_PATH=${REWARD_MODEL_PATH}"
-  echo "POLICY_MODEL_PATH=${POLICY_MODEL_PATH}"
-  echo "RESUME_DIR=${RESUME_DIR}"
   echo "LIBERO_REPO_PATH=${LIBERO_REPO_PATH}"
   echo "ROBOT_PLATFORM=${ROBOT_PLATFORM}"
-  echo "WANDB_MODE=${WANDB_MODE}"
+  echo "WANDB_MODE=${WANDB_MODE:-unset}"
   echo "WANDB_API_KEY_SET=$([[ -n "${WANDB_API_KEY:-}" ]] && echo true || echo false)"
   echo "WANDB_DIR=${WANDB_DIR}"
   echo "MUJOCO_GL=${MUJOCO_GL}"
@@ -250,35 +215,19 @@ while True:
     if alive >= target_nodes:
         break
     if time.time() > deadline:
-        raise SystemExit(
-            f"Timed out waiting for Ray nodes: {alive}/{target_nodes} after {timeout_s}s."
-        )
+        raise TimeoutError(f"Timed out waiting for {target_nodes} Ray nodes")
     time.sleep(2)
 ray.shutdown()
 PY
 
-  echo "Launching training on head with RAY_ADDRESS=${HEAD_ADDR}"
-  export RAY_ADDRESS="${HEAD_ADDR}"
-  eval "${TRAIN_CMD_STR}"
+  echo "Running training command on head node..." | tee -a "'"${LOG_FILE}"'"
+  eval "${TRAIN_CMD_STR}" 2>&1 | tee -a "'"${LOG_FILE}"'"
 else
   ray stop --force >/dev/null 2>&1 || true
   export RLINF_NODE_RANK="${SLURM_PROCID}"
-  connected=0
-  for i in $(seq 1 "${RAY_WORKER_RETRIES}"); do
-    if ray start --address="${HEAD_ADDR}" --disable-usage-stats; then
-      connected=1
-      break
-    fi
-    sleep 2
-  done
-
-  if [[ "${connected}" != "1" ]]; then
-    echo "Failed to connect Ray worker to ${HEAD_ADDR}" >&2
-    exit 1
-  fi
-
+  ray start --address="${HEAD_ADDR}" --temp-dir="${RAY_TMPDIR_RUNTIME}" --disable-usage-stats
   while [[ ! -f "${RAY_DONE_FILE}" ]]; do
-    sleep 2
+    sleep 5
   done
 fi
-' 2>&1 | tee -a "${LOG_FILE}"
+'

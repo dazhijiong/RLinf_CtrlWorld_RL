@@ -22,7 +22,7 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "ctrl_world_libero_spatial_grpo_openpi_pi05_eval"
+    experiment_name: "ctrl_world_libero_spatial_grpo_openpi_pi05_eval_step3000_local"
     logger_backends: ["tensorboard", "wandb"]
 
   max_epochs: 1000
@@ -33,7 +33,7 @@ runner:
   save_interval: 5
 
   resume_dir: null
-  ckpt_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/20260316-140154-ctrl_world_libero_spatial_grpo_openpi_pi05-job6138760/ctrl_world_libero_spatial_grpo_openpi_pi05/checkpoints/global_step_4/actor/model_state_dict/full_weights.pt"
+  ckpt_path: null
 
 algorithm:
   normalize_advantages: True
@@ -95,7 +95,7 @@ env:
     ctrl_world_cfg:
       num_inference_steps: 50
       policy_action_type: delta_eef
-      policy_gripper_type: symmetric_11_to_01
+      policy_gripper_type: passthrough
     enable_offload: False
 
   eval:
@@ -118,7 +118,7 @@ env:
     ctrl_world_cfg:
       num_inference_steps: 50
       policy_action_type: delta_eef
-      policy_gripper_type: symmetric_11_to_01
+      policy_gripper_type: passthrough
     enable_offload: False
 
 rollout:
@@ -130,7 +130,7 @@ rollout:
   pipeline_stage_num: 1
 
   model:
-    model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/RLinf-Pi05-LIBERO-SFT"
+    model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_libero_sft_step3000_local"
     precision: ${actor.model.precision}
 
 actor:
@@ -142,7 +142,7 @@ actor:
   enable_offload: False
 
   model:
-    model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/RLinf-Pi05-LIBERO-SFT"
+    model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_libero_sft_step3000_local"
     model_type: "openpi"
     num_action_chunks: ${env.train.ctrl_world_cfg.chunk}
     num_steps: 3

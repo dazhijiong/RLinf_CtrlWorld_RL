@@ -1187,6 +1187,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             "task_type": self.cfg.runner.task_type,
             "adv_type": self.cfg.algorithm.adv_type,
             "rewards": self.rollout_batch["rewards"],
+            "dynamic_gammas": self.rollout_batch.get("dynamic_gammas", None),
             "dones": self.rollout_batch["dones"],
             "values": self.rollout_batch.get("prev_values", None),
             "gamma": self.cfg.algorithm.get("gamma", 1),
@@ -1207,6 +1208,34 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
 
         rollout_metrics = compute_rollout_metrics(self.rollout_batch)
         return rollout_metrics
+
+    def _get_global_valid_loss_mask_count(self) -> int | None:
+        """Count valid training entries after reward filtering across all actor ranks."""
+        loss_mask = self.rollout_batch.get("loss_mask", None)
+        if loss_mask is None:
+            return None
+
+        local_valid_count = int(loss_mask.count_nonzero().item())
+        if torch.distributed.is_initialized():
+            return all_reduce_int(
+                local_valid_count, op=torch.distributed.ReduceOp.SUM
+            )
+        return local_valid_count
+
+    def _build_skipped_update_metrics(
+        self, global_valid_loss_mask_count: int
+    ) -> dict[str, float]:
+        """Emit stable metrics when a rollout produces no trainable GRPO samples."""
+        metrics = {
+            "actor/skipped_update": 1.0,
+            "actor/skipped_update_zero_valid_samples": 1.0,
+            "actor/valid_loss_mask_count": float(global_valid_loss_mask_count),
+            "actor/total_loss": 0.0,
+            "actor/grad_norm": 0.0,
+        }
+        if self.optimizer.param_groups:
+            metrics["actor/lr"] = float(self.optimizer.param_groups[0]["lr"])
+        return metrics
 
     def _build_sft_data_loader(self):
         if SupportedModel(self.cfg.actor.model.model_type) in [SupportedModel.OPENPI]:
@@ -1306,6 +1335,15 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             self.load_optimizer(self.device)
 
         self.model.train()
+        global_valid_loss_mask_count = self._get_global_valid_loss_mask_count()
+        if global_valid_loss_mask_count == 0:
+            self.log_on_first_rank(
+                "Rollout batch has zero valid samples after reward filtering; "
+                "skipping actor update for this GRPO rollout."
+            )
+            clear_memory()
+            return self._build_skipped_update_metrics(global_valid_loss_mask_count)
+
         rollout_size = (
             self.rollout_batch["prev_logprobs"].shape[0]
             * self.rollout_batch["prev_logprobs"].shape[1]
@@ -1496,3 +1534,12 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         self.version = global_step
         if hasattr(self.model, "set_global_step"):
             self.model.set_global_step(global_step)
+
+    def get_replay_buffer_warmup_status(self) -> dict[str, int | bool]:
+        """Report replay-buffer readiness for rollout warmup scheduling."""
+        return {
+            "has_replay_buffer": False,
+            "is_ready": True,
+            "buffer_size": 0,
+            "min_buffer_size": 0,
+        }
