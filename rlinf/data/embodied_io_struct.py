@@ -54,6 +54,7 @@ class EnvOutput:
     terminations: Optional[torch.Tensor] = None  # [B]
     truncations: Optional[torch.Tensor] = None  # [B]
     rewards: Optional[torch.Tensor] = None  # [B]
+    dynamic_gammas: Optional[torch.Tensor] = None  # [B]
 
     intervene_actions: Optional[torch.Tensor] = None  # [B]
     intervene_flags: Optional[torch.Tensor] = None  # [B]
@@ -78,6 +79,11 @@ class EnvOutput:
         )
         self.rewards = (
             self.rewards.cpu().contiguous() if self.rewards is not None else None
+        )
+        self.dynamic_gammas = (
+            self.dynamic_gammas.cpu().contiguous()
+            if self.dynamic_gammas is not None
+            else None
         )
         self.intervene_actions = (
             self.intervene_actions.cpu().contiguous()
@@ -216,6 +222,7 @@ class EnvOutput:
         merged_terminations = _merge_optional_tensor_field("terminations")
         merged_truncations = _merge_optional_tensor_field("truncations")
         merged_rewards = _merge_optional_tensor_field("rewards")
+        merged_dynamic_gammas = _merge_optional_tensor_field("dynamic_gammas")
         merged_intervene_actions = _merge_optional_tensor_field(
             "intervene_actions",
             allow_partial_none=True,
@@ -234,6 +241,7 @@ class EnvOutput:
             terminations=merged_terminations,
             truncations=merged_truncations,
             rewards=merged_rewards,
+            dynamic_gammas=merged_dynamic_gammas,
             intervene_actions=merged_intervene_actions,
             intervene_flags=merged_intervene_flags,
         ).to_dict()
@@ -251,6 +259,7 @@ class EnvOutput:
         env_output_dict["terminations"] = self.terminations
         env_output_dict["truncations"] = self.truncations
         env_output_dict["rewards"] = self.rewards
+        env_output_dict["dynamic_gammas"] = self.dynamic_gammas
         env_output_dict["intervene_actions"] = self.intervene_actions
         env_output_dict["intervene_flags"] = self.intervene_flags
 
@@ -339,6 +348,7 @@ class ChunkStepResult:
     truncations: torch.Tensor = None  # [B, 1]
     terminations: torch.Tensor = None  # [B, 1]
     rewards: torch.Tensor = None  # [B, 1]
+    dynamic_gammas: torch.Tensor = None  # [B, 1]
     forward_inputs: dict[str, torch.Tensor] = field(default_factory=dict)
     versions: torch.Tensor = None  # [B, 1]
 
@@ -357,6 +367,8 @@ class ChunkStepResult:
             self.truncations = self.truncations.cpu().contiguous()
         if self.rewards is not None:
             self.rewards = self.rewards.cpu().contiguous()
+        if self.dynamic_gammas is not None:
+            self.dynamic_gammas = self.dynamic_gammas.cpu().contiguous()
         if self.forward_inputs:
             self.forward_inputs = put_tensor_device(self.forward_inputs, "cpu")
         if self.versions is not None:
@@ -374,6 +386,7 @@ class Trajectory:
     actions: torch.Tensor = None
     intervene_flags: torch.Tensor = None
     rewards: torch.Tensor = None
+    dynamic_gammas: torch.Tensor = None
     terminations: torch.Tensor = None
     truncations: torch.Tensor = None
     dones: torch.Tensor = None
@@ -491,6 +504,7 @@ class Trajectory:
 
             actions = apply_mask(self.actions, i)
             rewards = apply_mask(self.rewards, i)
+            dynamic_gammas = apply_mask(self.dynamic_gammas, i)
             prev_logprobs = apply_mask(self.prev_logprobs, i)
             prev_values = apply_mask(self.prev_values, i)
             intervene_flags = apply_mask(self.intervene_flags, i)
@@ -515,6 +529,7 @@ class Trajectory:
                     actions=actions,
                     intervene_flags=intervene_flags,
                     rewards=rewards,
+                    dynamic_gammas=dynamic_gammas,
                     terminations=terminations,
                     truncations=truncations,
                     dones=dones,
@@ -573,6 +588,7 @@ class Trajectory:
 
             actions = apply_prefix_mask(self.actions, i, keep_mask)
             rewards = apply_prefix_mask(self.rewards, i, keep_mask)
+            dynamic_gammas = apply_prefix_mask(self.dynamic_gammas, i, keep_mask)
             prev_logprobs = apply_prefix_mask(self.prev_logprobs, i, keep_mask)
             prev_values = apply_prefix_mask(self.prev_values, i, keep_mask)
             intervene_flags = apply_prefix_mask(self.intervene_flags, i, keep_mask)
@@ -593,6 +609,7 @@ class Trajectory:
                     actions=actions,
                     intervene_flags=intervene_flags,
                     rewards=rewards,
+                    dynamic_gammas=dynamic_gammas,
                     terminations=terminations,
                     truncations=truncations,
                     dones=dones,
@@ -622,6 +639,7 @@ class EmbodiedRolloutResult:
         default_factory=list
     )  # trajectory_length
     rewards: list[torch.Tensor] = field(default_factory=list)  # trajectory_length
+    dynamic_gammas: list[torch.Tensor] = field(default_factory=list)  # trajectory_length
     terminations: list[torch.Tensor] = field(
         default_factory=list
     )  # trajectory_length + rollout_epoch
@@ -651,6 +669,8 @@ class EmbodiedRolloutResult:
             )
         if result.rewards is not None:
             self.rewards.append(result.rewards)
+        if result.dynamic_gammas is not None:
+            self.dynamic_gammas.append(result.dynamic_gammas)
         if result.terminations is not None:
             self.terminations.append(result.terminations)
         if result.truncations is not None:
@@ -746,6 +766,10 @@ class EmbodiedRolloutResult:
             )
         if len(self.rewards) > 0:
             trajectory.rewards = torch.stack(self.rewards, dim=0).cpu().contiguous()
+        if len(self.dynamic_gammas) > 0:
+            trajectory.dynamic_gammas = (
+                torch.stack(self.dynamic_gammas, dim=0).cpu().contiguous()
+            )
         if len(self.terminations) > 0:
             trajectory.terminations = (
                 torch.stack(self.terminations, dim=0).cpu().contiguous()

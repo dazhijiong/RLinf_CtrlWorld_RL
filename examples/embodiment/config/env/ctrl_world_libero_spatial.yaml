@@ -37,10 +37,10 @@ enable_offload: False
 ctrl_world_repo_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World"
 
 # World-model assets
-ctrl_world_ckpt_path: "${env.train.ctrl_world_repo_path}/model_ckpt/doird_subset/checkpoint-20000.pt"
+ctrl_world_ckpt_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World/model_ckpt/doird_subset/checkpoint-10000.pt"
 ctrl_world_svd_model_path: "${env.train.ctrl_world_repo_path}/pretrained/stable-video-diffusion-img2vid"
 ctrl_world_clip_model_path: "${env.train.ctrl_world_repo_path}/pretrained/clip-vit-base-patch32"
-ctrl_world_stat_path: "${env.train.ctrl_world_repo_path}/dataset_meta_info/droid/stat.json"
+ctrl_world_stat_path: "${env.train.ctrl_world_repo_path}/dataset_meta_info/ctrl_world_libero_spatial_from_lerobot/stat.json"
 
 # Initial reset-state dataset for RLinf world-model rollout.
 initial_image_dataset_type: "lerobot"
@@ -65,7 +65,8 @@ ctrl_world_cfg:
   condition_frame_length: 1
   num_history: 6
   action_dim: 7
-  policy_action_type: absolute_eef
+  # Supported values: delta_eef, absolute_eef
+  policy_action_type: delta_eef
   policy_gripper_type: passthrough
 
   # Image settings (single view); Ctrl-World internally uses 3x vertically concatenated views

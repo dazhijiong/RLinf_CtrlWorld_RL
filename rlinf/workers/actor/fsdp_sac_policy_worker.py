@@ -695,6 +695,19 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
         )
         return mean_metric_dict
 
+    def get_replay_buffer_warmup_status(self) -> dict[str, int | bool]:
+        """Expose replay-buffer readiness so the runner can warm up with rollouts."""
+        min_buffer_size = int(
+            self.cfg.algorithm.replay_buffer.get("min_buffer_size", 100)
+        )
+        buffer_size = len(self.replay_buffer) if self.replay_buffer is not None else 0
+        return {
+            "has_replay_buffer": True,
+            "is_ready": buffer_size >= min_buffer_size,
+            "buffer_size": buffer_size,
+            "min_buffer_size": min_buffer_size,
+        }
+
     @Worker.timer("run_training")
     def run_training(self):
         """SAC training using replay buffer"""

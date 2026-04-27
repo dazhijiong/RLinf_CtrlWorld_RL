@@ -127,7 +127,7 @@ env:
   eval:
     total_num_envs: 1
     auto_reset: True
-    ignore_terminations: False
+    ignore_terminations: True
     max_episode_steps: 100
     max_steps_per_rollout_epoch: 100
     group_size: 1
@@ -176,7 +176,8 @@ actor:
     add_value_head: True
     num_steps: 5
     openpi:
-      config_name: "pi05_ur5_realworld"
+      config_name: "pi05_book"
+      norm_stats_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_book_sft_step3000_local/lerobot_book/norm_stats.json"
       num_images_in_input: 3
       value_after_vlm: True
       noise_method: "flow_noise"

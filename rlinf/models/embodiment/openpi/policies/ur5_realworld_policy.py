@@ -71,6 +71,12 @@ def _extract_extra_views(
     return tuple(parsed_images), tuple(image_masks)
 
 
+def _extract_named_view(image, base_image: np.ndarray) -> tuple[np.ndarray, np.bool_]:
+    if image is None:
+        return np.zeros_like(base_image), np.False_
+    return _parse_image(image), np.True_
+
+
 @dataclasses.dataclass(frozen=True)
 class UR5RealWorldOutputs(transforms.DataTransformFn):
     def __call__(self, data: dict) -> dict:
@@ -89,9 +95,25 @@ class UR5RealWorldInputs(transforms.DataTransformFn):
         state = transforms.pad_to_dim(state, self.action_dim)
 
         base_image = _parse_image(data["observation/image"])
-        extra_images, extra_masks = _extract_extra_views(
-            data.get("observation/extra_view_image"), base_image
-        )
+        extra_view_image = data.get("observation/extra_view_image")
+        use_named_views = "observation/wrist_image" in data
+        if not use_named_views and extra_view_image is not None:
+            extra_view_ndim = np.asarray(extra_view_image).ndim
+            use_named_views = extra_view_ndim == 3
+
+        if use_named_views:
+            left_wrist, left_mask = _extract_named_view(
+                data.get("observation/wrist_image"), base_image
+            )
+            right_wrist, right_mask = _extract_named_view(
+                extra_view_image, base_image
+            )
+            extra_images = (left_wrist, right_wrist)
+            extra_masks = (left_mask, right_mask)
+        else:
+            extra_images, extra_masks = _extract_extra_views(
+                extra_view_image, base_image
+            )
 
         if self.model_type in (_model.ModelType.PI0, _model.ModelType.PI05):
             names = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")

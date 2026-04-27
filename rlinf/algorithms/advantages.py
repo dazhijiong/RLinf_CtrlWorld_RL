@@ -121,6 +121,74 @@ def compute_grpo_advantages(
     return advantages, None
 
 
+@register_advantage("grpo_action_suffix")
+def compute_grpo_action_suffix_advantages(
+    rewards: torch.Tensor,
+    loss_mask: torch.Tensor,
+    group_size: int,
+    dones: Optional[torch.Tensor] = None,
+    dynamic_gammas: Optional[torch.Tensor] = None,
+    **kwargs,
+):
+    """
+    Compute step-wise GRPO advantages using dynamic suffix returns.
+
+    Args:
+        rewards: Step rewards with shape [n_steps, bsz].
+        loss_mask: Valid-step mask with shape [n_steps, bsz].
+        group_size: Number of samples in each GRPO group.
+        dones: Done flags with shape [n_steps + 1, bsz].
+        dynamic_gammas: Per-step discount factors with shape [n_steps, bsz].
+
+    Returns:
+        Tuple[torch.Tensor, None]: Step-wise advantages and no returns tensor.
+    """
+    if loss_mask is None:
+        loss_mask = torch.ones_like(rewards, dtype=torch.bool)
+    if dones is None:
+        dones = torch.zeros(
+            rewards.shape[0] + 1,
+            rewards.shape[1],
+            dtype=torch.bool,
+            device=rewards.device,
+        )
+    if dynamic_gammas is None:
+        raise ValueError(
+            "grpo_action_suffix requires per-step dynamic_gammas in the rollout batch"
+        )
+
+    n_steps, batch_size = rewards.shape
+    if batch_size % group_size != 0:
+        raise ValueError(
+            f"Batch size {batch_size} must be divisible by group_size {group_size}"
+        )
+    if dynamic_gammas.shape != rewards.shape:
+        raise ValueError(
+            f"Expected dynamic_gammas shape {rewards.shape}, got {dynamic_gammas.shape}"
+        )
+
+    returns = torch.zeros_like(rewards)
+    running = torch.zeros(batch_size, dtype=rewards.dtype, device=rewards.device)
+    for step in reversed(range(n_steps)):
+        gamma_t = dynamic_gammas[step].to(rewards.dtype)
+        running = rewards[step] + gamma_t * running * (~dones[step + 1]).to(
+            rewards.dtype
+        )
+        returns[step] = running
+
+    advantages = torch.zeros_like(returns)
+    num_groups = batch_size // group_size
+    for step in range(n_steps):
+        grouped_returns = returns[step].view(num_groups, group_size)
+        grouped_mean = grouped_returns.mean(dim=-1, keepdim=True)
+        grouped_std = grouped_returns.std(dim=-1, keepdim=True)
+        step_advantages = (grouped_returns - grouped_mean) / (grouped_std + 1e-6)
+        advantages[step] = step_advantages.view(-1)
+
+    advantages = advantages * loss_mask.to(advantages.dtype)
+    return advantages, None
+
+
 @register_advantage("grpo_dynamic")
 def compute_grpo_dynamic_advantages(
     rewards: torch.Tensor,

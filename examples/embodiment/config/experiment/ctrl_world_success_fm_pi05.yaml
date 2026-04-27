@@ -9,17 +9,17 @@ cluster:
 
 paths:
   ctrl_world_repo_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World"
-  ctrl_world_ckpt_path: "${exp.paths.ctrl_world_repo_path}/model_ckpt/doird_subset/checkpoint-30000.pt"
+  ctrl_world_ckpt_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World/model_ckpt/doird_subset/checkpoint-10000.pt"
   initial_image_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/datasets/lerobot_libero_spatial_image"
   reward_model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/RLinf-OpenSora-LIBERO-Spatial/resnet_rm.pth"
-  policy_model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/RLinf-Pi05-LIBERO-SFT"
+  policy_model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_libero_sft_train20_step2000_local"
 
 training:
   max_epochs: 1000
   total_num_envs: 96
   group_size: 1
   max_episode_steps: 240
-  max_steps_per_rollout_epoch: 120
+  max_steps_per_rollout_epoch: 240
   rollout_epoch: 1
   update_epoch: 1
   truncate_after_first_success: True
@@ -45,7 +45,7 @@ ctrl_world:
   frame_level_cond: True
   his_cond_zero: False
   policy_action_type: delta_eef
-  policy_gripper_type: symmetric_11_to_01
+  policy_gripper_type: passthrough
 
 optim:
   micro_batch_size: 32

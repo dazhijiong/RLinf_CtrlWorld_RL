@@ -94,6 +94,20 @@ def get_model(cfg: DictConfig, torch_dtype=None):
         actor_train_config.assets_dirs, actor_model_config
     )
     norm_stats = None
+    norm_stats_path = getattr(cfg.openpi, "norm_stats_path", None)
+    if norm_stats_path:
+        norm_stats_path = download.maybe_download(str(norm_stats_path))
+        if not os.path.exists(norm_stats_path):
+            raise FileNotFoundError(f"norm_stats_path does not exist: {norm_stats_path}")
+        if os.path.basename(norm_stats_path) != "norm_stats.json":
+            raise ValueError(
+                "norm_stats_path must point to a norm_stats.json file, "
+                f"but got: {norm_stats_path}"
+            )
+        asset_dir = os.path.dirname(norm_stats_path)
+        checkpoint_root = os.path.dirname(asset_dir)
+        asset_id = os.path.basename(asset_dir)
+        norm_stats = _checkpoints.load_norm_stats(checkpoint_root, asset_id)
     if norm_stats is None:
         # We are loading the norm stats from the checkpoint instead of the config assets dir to make sure
         # that the policy is using the same normalization stats as the original training process.

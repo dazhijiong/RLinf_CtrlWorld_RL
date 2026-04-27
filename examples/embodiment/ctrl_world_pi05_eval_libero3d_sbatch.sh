@@ -7,7 +7,7 @@
 #SBATCH --gpus-per-node=A100:4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=12
-#SBATCH --time=02:00:00
+#SBATCH --time=00:20:00
 #SBATCH -p alvis
 
 set -euo pipefail
@@ -73,7 +73,13 @@ if [[ ! -d "${LIBERO_REPO_PATH}" ]]; then
 fi
 
 CONFIG_NAME="${CONFIG_NAME:-ctrl_world_libero_spatial_grpo_openpi_pi05_eval_libero3d}"
-EVAL_CKPT_PATH="${EVAL_CKPT_PATH:-}"
+DEFAULT_EVAL_CKPT_PATH=""
+if [[ ! ${EVAL_CKPT_PATH+x} ]]; then
+  EVAL_CKPT_PATH="${DEFAULT_EVAL_CKPT_PATH}"
+elif [[ "${EVAL_CKPT_PATH}" == "none" || "${EVAL_CKPT_PATH}" == "null" ]]; then
+  EVAL_CKPT_PATH=""
+fi
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-ctrl_world_libero_spatial_grpo_openpi_pi05_eval_libero3d_RLinf_Pi05_LIBERO_SFT}"
 TIMESTAMP="$(date +'%Y%m%d-%H%M%S')"
 LOG_DIR="${REPO_PATH}/logs/${TIMESTAMP}-${CONFIG_NAME}-job${SLURM_JOB_ID}"
 LOG_FILE="${LOG_DIR}/eval_embodiment.log"
@@ -147,6 +153,7 @@ CMD=(
   --config-path "${EMBODIED_PATH}/config/"
   --config-name "${CONFIG_NAME}"
   "runner.logger.log_path=${LOG_DIR}"
+  "runner.logger.experiment_name=${EXPERIMENT_NAME}"
   "cluster.num_nodes=${NUM_NODES}"
 )
 
@@ -169,6 +176,7 @@ export EVAL_CMD_STR
   echo "Using Python at ${PYTHON_BIN}"
   echo "CONFIG_NAME=${CONFIG_NAME}"
   echo "EVAL_CKPT_PATH=${EVAL_CKPT_PATH}"
+  echo "EXPERIMENT_NAME=${EXPERIMENT_NAME}"
   echo "CTRL_WORLD_PATH=${CTRL_WORLD_PATH}"
   echo "LIBERO_REPO_PATH=${LIBERO_REPO_PATH}"
   echo "ROBOT_PLATFORM=${ROBOT_PLATFORM}"

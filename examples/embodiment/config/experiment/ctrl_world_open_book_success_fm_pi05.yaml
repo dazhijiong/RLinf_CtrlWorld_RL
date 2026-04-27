@@ -1,0 +1,51 @@
+logging:
+  experiment_name: "ctrl_world_open_book_success_fm_openpi_pi05"
+
+paths:
+  ctrl_world_repo_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World"
+  ctrl_world_ckpt_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World/model_ckpt/ctrl_world_book_from_lerobot_base_20260404/checkpoint-15000.pt"
+  initial_image_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/lerobot_book"
+  reward_model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/reward_model/outputs/open_book_resnet_rm_ep0_15_boundary_v2_strong_aug/resnet_rm.pth"
+  policy_model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_book_sft_filtered_step600_local"
+
+training:
+  max_epochs: 1000
+  total_num_envs: 48
+  group_size: 1
+  max_episode_steps: 960
+  max_steps_per_rollout_epoch: 960
+  rollout_epoch: 1
+  update_epoch: 1
+  truncate_after_first_success: True
+
+evaluation:
+  total_num_envs: 496
+  group_size: 1
+  max_episode_steps: 240
+  max_steps_per_rollout_epoch: 240
+  rollout_epoch: 1
+
+replay_buffer:
+  cache_size: 2000
+  min_buffer_size: 1
+  sample_window_size: 2000
+
+rollout:
+  video_fps: 7
+
+ctrl_world:
+  num_inference_steps: 50
+  decode_chunk_size: 20
+  frame_level_cond: True
+  his_cond_zero: False
+  policy_action_type: absolute_eef
+  policy_gripper_type: passthrough
+
+optim:
+  micro_batch_size: 32
+  global_batch_size: 512
+  seed: 42
+  num_steps: 3
+  lr: 5.0e-6
+  weight_decay: 0.01
+  clip_grad: 1.0

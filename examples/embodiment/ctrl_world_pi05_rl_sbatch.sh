@@ -34,7 +34,13 @@ module load PyTorch/2.7.1-foss-2024a-CUDA-12.6.0
 module load FFmpeg/7.0.2-GCCcore-13.3.0
 module load git-lfs/3.6.1
 
+# ----------------------------
+# Editable runtime parameters
+# ----------------------------
+CONFIG_NAME="${CONFIG_NAME:-ctrl_world_libero_spatial_grpo_openpi_pi05}"
 VENV_PATH="${VENV_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/.venv_pi05}"
+CTRL_WORLD_PATH="${CTRL_WORLD_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World}"
+LIBERO_REPO_PATH="${LIBERO_REPO_PATH:-${VENV_PATH}/libero}"
 if [[ -f "${VENV_PATH}/bin/activate" ]]; then
   # shellcheck disable=SC1090
   source "${VENV_PATH}/bin/activate"
@@ -55,8 +61,8 @@ if [[ -z "${PYTHON_BIN}" ]]; then
 fi
 
 export EMBODIED_PATH="${REPO_PATH}/examples/embodiment"
-export CTRL_WORLD_PATH="${CTRL_WORLD_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World}"
-export LIBERO_REPO_PATH="${LIBERO_REPO_PATH:-${VENV_PATH}/libero}"
+export CTRL_WORLD_PATH
+export LIBERO_REPO_PATH
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:False}"
@@ -76,8 +82,6 @@ if [[ ! -d "${LIBERO_REPO_PATH}" ]]; then
   echo "LIBERO_REPO_PATH does not exist: ${LIBERO_REPO_PATH}" >&2
   exit 1
 fi
-
-CONFIG_NAME="${CONFIG_NAME:-ctrl_world_libero_spatial_grpo_openpi_pi05}"
 TIMESTAMP="$(date +'%Y%m%d-%H%M%S')"
 LOG_DIR="${REPO_PATH}/logs/${TIMESTAMP}-${CONFIG_NAME}-job${SLURM_JOB_ID}"
 LOG_FILE="${LOG_DIR}/run_embodiment.log"

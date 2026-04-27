@@ -42,7 +42,7 @@ from rlinf.scheduler import WorkerInfo
 class RealWorldEnv(gym.Env):
     def __init__(self, cfg, num_envs, seed_offset, total_num_processes, worker_info):
         assert num_envs == 1, (
-            f"Currently, only 1 realworld env can be started per worker, but {num_envs=} is received."
+            f"Currently, only 1 realworld env can be started per worker, but {num_envs} is received."
         )
 
         self.cfg = cfg
@@ -230,8 +230,15 @@ class RealWorldEnv(gym.Env):
         raw_images = OrderedDict(sorted(raw_obs["frames"].items()))
         raw_images.pop(self.main_image_key)
 
-        if raw_images:
-            obs["extra_view_images"] = np.stack(list(raw_images.values()), axis=1)
+        remaining_images = list(raw_images.values())
+        if remaining_images:
+            # Keep the first non-main camera as the wrist view so realworld envs
+            # match the common embodied observation contract.
+            obs["wrist_images"] = remaining_images[0]
+        if len(remaining_images) == 2:
+            obs["extra_view_images"] = remaining_images[1]
+        elif len(remaining_images) > 2:
+            obs["extra_view_images"] = np.stack(remaining_images[1:], axis=1)
 
         obs = to_tensor(obs)
         obs["task_descriptions"] = self.task_descriptions

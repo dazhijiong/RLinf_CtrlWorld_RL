@@ -34,6 +34,7 @@ runner:
   only_eval: False
   val_check_interval: -1
   save_interval: 1
+  rollout_until_replay_buffer_ready: True
 
   resume_dir: null
   ckpt_path: null
@@ -87,8 +88,9 @@ env:
     initial_image_path: ${exp.paths.initial_image_path}
     ctrl_world_reward_model_path: ${exp.paths.reward_model_path}
     video_cfg:
-      save_video: False
+      save_video: True
       fps: ${exp.rollout.video_fps}
+      save_success_frame: True
     ctrl_world_cfg:
       num_inference_steps: ${exp.ctrl_world.num_inference_steps}
       decode_chunk_size: ${exp.ctrl_world.decode_chunk_size}
@@ -154,6 +156,7 @@ actor:
     openpi:
       config_name: "pi05_libero"
       num_images_in_input: 2
+      add_libero_prompt_prefix: False
 
   optim:
     lr: ${exp.optim.lr}

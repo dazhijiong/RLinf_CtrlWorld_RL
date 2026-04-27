@@ -43,10 +43,11 @@ VENV_PATH="${VENV_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/.ven
 CTRL_WORLD_PATH="${CTRL_WORLD_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World}"
 LIBERO_REPO_PATH="${LIBERO_REPO_PATH:-${VENV_PATH}/libero}"
 
-POLICY_MODEL_PATH="${POLICY_MODEL_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/RLinf-Pi05-LIBERO-SFT}"
+POLICY_MODEL_PATH="${POLICY_MODEL_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_libero_sft_train20_step2000_local}"
 INITIAL_IMAGE_PATH="${INITIAL_IMAGE_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/datasets/lerobot_libero_spatial_image}"
 REWARD_MODEL_PATH="${REWARD_MODEL_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/RLinf-OpenSora-LIBERO-Spatial/resnet_rm.pth}"
-CTRL_WORLD_CKPT_PATH="${CTRL_WORLD_CKPT_PATH:-${CTRL_WORLD_PATH}/model_ckpt/doird_subset/checkpoint-30000.pt}"
+CTRL_WORLD_CKPT_PATH="${CTRL_WORLD_CKPT_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World/model_ckpt/doird_subset/checkpoint-10000.pt}"
+RESUME_DIR="${RESUME_DIR:-}"
 
 MUJOCO_GL="${MUJOCO_GL:-egl}"
 PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
@@ -95,6 +96,10 @@ if [[ ! -d "${LIBERO_REPO_PATH}" ]]; then
 fi
 if [[ ! -f "${CTRL_WORLD_CKPT_PATH}" ]]; then
   echo "CTRL_WORLD_CKPT_PATH does not exist: ${CTRL_WORLD_CKPT_PATH}" >&2
+  exit 1
+fi
+if [[ -n "${RESUME_DIR}" && ! -d "${RESUME_DIR}" ]]; then
+  echo "RESUME_DIR does not exist: ${RESUME_DIR}" >&2
   exit 1
 fi
 
@@ -174,6 +179,10 @@ CMD=(
   "exp.paths.policy_model_path=${POLICY_MODEL_PATH}"
 )
 
+if [[ -n "${RESUME_DIR}" ]]; then
+  CMD+=("runner.resume_dir=${RESUME_DIR}")
+fi
+
 if [[ $# -gt 0 ]]; then
   CMD+=("$@")
 fi
@@ -193,6 +202,7 @@ export TRAIN_CMD_STR
   echo "INITIAL_IMAGE_PATH=${INITIAL_IMAGE_PATH}"
   echo "REWARD_MODEL_PATH=${REWARD_MODEL_PATH}"
   echo "POLICY_MODEL_PATH=${POLICY_MODEL_PATH}"
+  echo "RESUME_DIR=${RESUME_DIR}"
   echo "LIBERO_REPO_PATH=${LIBERO_REPO_PATH}"
   echo "ROBOT_PLATFORM=${ROBOT_PLATFORM}"
   echo "WANDB_MODE=${WANDB_MODE}"

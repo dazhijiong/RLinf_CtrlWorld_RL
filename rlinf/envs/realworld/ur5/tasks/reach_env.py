@@ -77,4 +77,4 @@ class UR5ReachEnv(UR5Env):
 
     @property
     def task_description(self):
-        return "Reach the target pose with the UR5 end-effector."
+        return "Open the book"

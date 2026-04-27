@@ -1,0 +1,78 @@
+env_type: ctrl_world_wm
+task_suite_name: libero_spatial
+wm_env_type: libero
+
+total_num_envs: null
+
+auto_reset: False
+ignore_terminations: False
+max_steps_per_rollout_epoch: 240
+max_episode_steps: 240
+
+use_rel_reward: True
+reward_coef: 1.0
+success_reward_threshold: 0.5
+
+reset_gripper_open: True
+is_eval: False
+
+seed: 0
+group_size: 1
+use_fixed_reset_state_ids: True
+use_ordered_reset_state_ids: False
+
+specific_reset_id: null
+
+video_cfg:
+  save_video: True
+  info_on_video: True
+  extra_info_on_video: ["policy_action_last"]
+  fps: 7
+  video_base_dir: ${runner.logger.log_path}/video/train
+
+enable_offload: False
+
+ctrl_world_repo_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World"
+
+ctrl_world_ckpt_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World/model_ckpt/ctrl_world_book_from_lerobot_base_20260404/checkpoint-15000.pt"
+ctrl_world_svd_model_path: "${env.train.ctrl_world_repo_path}/pretrained/stable-video-diffusion-img2vid"
+ctrl_world_clip_model_path: "${env.train.ctrl_world_repo_path}/pretrained/clip-vit-base-patch32"
+ctrl_world_stat_path: "${env.train.ctrl_world_repo_path}/dataset_meta_info/ctrl_world_book_from_lerobot/stat.json"
+
+initial_image_dataset_type: "lerobot_book"
+initial_image_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/lerobot_book"
+
+ctrl_world_reward_model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/reward_model/outputs/open_book_resnet_rm_ep0_15_boundary_v2_strong_aug/resnet_rm.pth"
+
+ctrl_world_cfg:
+  dtype: bf16
+
+  ctrl_world_repo_path: ${env.train.ctrl_world_repo_path}
+  ckpt_path: ${env.train.ctrl_world_ckpt_path}
+  svd_model_path: ${env.train.ctrl_world_svd_model_path}
+  clip_model_path: ${env.train.ctrl_world_clip_model_path}
+  data_stat_path: ${env.train.ctrl_world_stat_path}
+
+  chunk: 5
+  condition_frame_length: 1
+  num_history: 6
+  action_dim: 7
+  policy_action_type: absolute_eef
+  policy_gripper_type: passthrough
+
+  image_size: [192, 320]
+  main_view_index: 0
+  wrist_view_index: 2
+
+  num_inference_steps: 50
+  decode_chunk_size: 12
+  guidance_scale: 1.0
+  fps: 7
+  motion_bucket_id: 127
+  text_cond: True
+  frame_level_cond: True
+  his_cond_zero: False
+
+  reward_model:
+    type: ResnetRewModel
+    from_pretrained: ${env.train.ctrl_world_reward_model_path}
