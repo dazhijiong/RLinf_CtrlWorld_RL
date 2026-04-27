@@ -11,7 +11,7 @@ max_episode_steps: 240
 
 use_rel_reward: True
 reward_coef: 1.0
-success_reward_threshold: 0.7
+success_reward_threshold: 0.5
 
 reset_gripper_open: True
 is_eval: False
@@ -42,7 +42,7 @@ ctrl_world_stat_path: "${env.train.ctrl_world_repo_path}/dataset_meta_info/ctrl_
 initial_image_dataset_type: "lerobot_book"
 initial_image_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/lerobot_book"
 
-ctrl_world_reward_model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/reward_model/outputs/open_book_resnet_rm/resnet_rm.pth"
+ctrl_world_reward_model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/reward_model/outputs/open_book_resnet_rm_ep0_15_boundary_v2_strong_aug/resnet_rm.pth"
 
 ctrl_world_cfg:
   dtype: bf16

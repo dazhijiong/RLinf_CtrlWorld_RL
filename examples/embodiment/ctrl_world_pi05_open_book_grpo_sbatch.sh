@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-#SBATCH -J rlinf_ctrl_world_pi05_open_book_success_fm
+#SBATCH -J rlinf_ctrl_world_pi05_open_book_grpo
 #SBATCH -A naiss2025-22-1173
-#SBATCH --output=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/ctrl_world_pi05_open_book_success_fm_out_%j.txt
-#SBATCH --error=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/ctrl_world_pi05_open_book_success_fm_err_%j.txt
-#SBATCH --nodes=1
-#SBATCH --gpus-per-node=A100fat:4
+#SBATCH --output=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/ctrl_world_pi05_open_book_grpo_out_%j.txt
+#SBATCH --error=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/ctrl_world_pi05_open_book_grpo_err_%j.txt
+#SBATCH --nodes=2
+#SBATCH --gpus-per-node=A100:4 -C MEM512
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
 #SBATCH --time=10:00:00
@@ -34,7 +34,7 @@ module load PyTorch/2.7.1-foss-2024a-CUDA-12.6.0
 module load FFmpeg/7.0.2-GCCcore-13.3.0
 module load git-lfs/3.6.1
 
-CONFIG_NAME="${CONFIG_NAME:-ctrl_world_open_book_success_fm_openpi_pi05}"
+CONFIG_NAME="${CONFIG_NAME:-ctrl_world_open_book_grpo_openpi_pi05}"
 
 VENV_PATH="${VENV_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/.venv_pi05}"
 CTRL_WORLD_PATH="${CTRL_WORLD_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World}"
@@ -236,20 +236,19 @@ else
   export RLINF_NODE_RANK="${SLURM_PROCID}"
   connected=0
   for i in $(seq 1 "${RAY_WORKER_RETRIES}"); do
-    if ray start --address="${HEAD_ADDR}" --disable-usage-stats; then
+    if ray start --address="${HEAD_ADDR}" --temp-dir="${RAY_TMPDIR_RUNTIME}" --disable-usage-stats; then
       connected=1
       break
     fi
+    echo "Worker ${SLURM_PROCID} failed to join Ray on attempt ${i}/${RAY_WORKER_RETRIES}; retrying..." >&2
     sleep 2
   done
-
   if [[ "${connected}" != "1" ]]; then
-    echo "Failed to connect Ray worker to ${HEAD_ADDR}" >&2
+    echo "Worker ${SLURM_PROCID} failed to join Ray cluster at ${HEAD_ADDR}" >&2
     exit 1
   fi
-
   while [[ ! -f "${RAY_DONE_FILE}" ]]; do
-    sleep 2
+    sleep 5
   done
 fi
-' 2>&1 | tee -a "${LOG_FILE}"
+'

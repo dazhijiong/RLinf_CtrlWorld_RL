@@ -1,5 +1,5 @@
 logging:
-  experiment_name: "ctrl_world_open_book_success_fm_openpi_pi05"
+  experiment_name: "ctrl_world_open_book_grpo_openpi_pi05"
 
 paths:
   ctrl_world_repo_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World"
@@ -10,13 +10,12 @@ paths:
 
 training:
   max_epochs: 1000
-  total_num_envs: 48
-  group_size: 1
+  total_num_envs: 96
+  group_size: 16
   max_episode_steps: 960
   max_steps_per_rollout_epoch: 960
-  rollout_epoch: 1
+  rollout_epoch: 4
   update_epoch: 1
-  truncate_after_first_success: True
 
 evaluation:
   total_num_envs: 496
@@ -24,11 +23,6 @@ evaluation:
   max_episode_steps: 240
   max_steps_per_rollout_epoch: 240
   rollout_epoch: 1
-
-replay_buffer:
-  cache_size: 2000
-  min_buffer_size: 1
-  sample_window_size: 2000
 
 rollout:
   video_fps: 7
@@ -43,7 +37,7 @@ ctrl_world:
 
 optim:
   micro_batch_size: 32
-  global_batch_size: 512
+  global_batch_size: 1536
   seed: 42
   num_steps: 3
   lr: 5.0e-6

@@ -775,6 +775,13 @@ class CtrlWorldEnv(BaseWorldEnv):
         extract_chunk_obs = extract_chunk_obs[:, -self.chunk :, :, :, :, :]
         extract_chunk_obs = extract_chunk_obs.reshape(self.num_envs * self.chunk, 3, 1, *self.image_size)
         extract_chunk_obs = extract_chunk_obs.squeeze(2).to(self.device)
+        # Align online reward inference with reward-model training preprocessing.
+        extract_chunk_obs = F.interpolate(
+            extract_chunk_obs,
+            size=(224, 224),
+            mode="bilinear",
+            align_corners=False,
+        )
 
         # return torch.zeros((self.num_envs, self.chunk), dtype=torch.float32, device=self.device)
 

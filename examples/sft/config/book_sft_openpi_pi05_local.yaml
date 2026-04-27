@@ -30,7 +30,7 @@ runner:
   resume_dir: null
 
 data:
-  train_data_paths: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/lerobot_book"
+  train_data_paths: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/lerobot_book_filtered_small_motion"
 
 algorithm:
   adv_type: gae

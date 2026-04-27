@@ -4,7 +4,7 @@
 #SBATCH --output=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/pi05_book_sft_out_%j.txt
 #SBATCH --error=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/pi05_book_sft_err_%j.txt
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=A40:4
+#SBATCH --gpus-per-node=A100:4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --time=01:00:00
@@ -62,7 +62,7 @@ export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 CONFIG_NAME="${CONFIG_NAME:-book_sft_openpi_pi05_local}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-book_sft_openpi_pi05_local_base_lr1e5}"
 MODEL_PATH="${MODEL_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_base_rlinf}"
-DATA_PATH="${DATA_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/lerobot_book}"
+DATA_PATH="${DATA_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/lerobot_book_filtered_small_motion}"
 LR="${LR:-1.0e-5}"
 RESUME_DIR="${RESUME_DIR:-}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-}"
