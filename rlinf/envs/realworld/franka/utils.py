@@ -101,12 +101,30 @@ def quat_slerp(q0, q1, t):
     return results
 
 
+def pose_to_rotation(tcp_pose):
+    """Convert a TCP pose to a SciPy rotation.
+
+    Supports both:
+    - ``[x, y, z, qx, qy, qz, qw]``
+    - ``[x, y, z, rx, ry, rz]`` where ``r*`` is a rotation vector
+    """
+    tcp_pose = np.asarray(tcp_pose)
+    orient = tcp_pose[3:]
+    if orient.shape[-1] == 4:
+        return R.from_quat(orient.copy())
+    if orient.shape[-1] == 3:
+        return R.from_rotvec(orient.copy())
+    raise ValueError(
+        f"Expected TCP pose orientation to have 3 or 4 values, got {orient.shape}."
+    )
+
+
 def construct_adjoint_matrix(tcp_pose):
     """
     Construct the adjoint matrix for a spatial velocity vector
-    :args: tcp_pose: (x, y, z, qx, qy, qz, qw)
+    :args: tcp_pose: (x, y, z, qx, qy, qz, qw) or (x, y, z, rx, ry, rz)
     """
-    rotation = R.from_quat(tcp_pose[3:].copy()).as_matrix()
+    rotation = pose_to_rotation(tcp_pose).as_matrix()
     translation = np.array(tcp_pose[:3])
     skew_matrix = np.array(
         [
@@ -125,9 +143,9 @@ def construct_adjoint_matrix(tcp_pose):
 def construct_homogeneous_matrix(tcp_pose):
     """
     Construct the homogeneous transformation matrix from given pose.
-    args: tcp_pose: (x, y, z, qx, qy, qz, qw)
+    args: tcp_pose: (x, y, z, qx, qy, qz, qw) or (x, y, z, rx, ry, rz)
     """
-    rotation = R.from_quat(tcp_pose[3:]).as_matrix()
+    rotation = pose_to_rotation(tcp_pose).as_matrix()
     translation = np.array(tcp_pose[:3])
     T = np.zeros((4, 4))
     T[:3, :3] = rotation

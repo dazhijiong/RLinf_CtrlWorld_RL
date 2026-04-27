@@ -17,7 +17,6 @@ import time
 from typing import Optional
 
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 
 from rlinf.scheduler import Cluster, NodePlacementStrategy, Worker
 from rlinf.utils.logging import get_logger
@@ -183,9 +182,7 @@ class CustomUR5Controller(Worker):
 
     def move_arm(self, pose: np.ndarray):
         pose = np.asarray(pose, dtype=np.float64)
-        rotvec = R.from_quat(pose[3:]).as_rotvec()
-        target_pose = np.concatenate([pose[:3], rotvec])
-        self._rtde_control.moveL(target_pose, self._move_vel, self._move_acc)
+        self._rtde_control.moveL(pose, self._move_vel, self._move_acc)
         return True
 
     def open_gripper(self):
@@ -222,8 +219,7 @@ class CustomUR5Controller(Worker):
 
     def get_state(self) -> UR5RobotState:
         pose = np.asarray(self._rtde_receive.getActualTCPPose(), dtype=np.float64)
-        quat = R.from_rotvec(pose[3:]).as_quat()
-        self._state.tcp_pose = np.concatenate([pose[:3], quat]).astype(np.float32)
+        self._state.tcp_pose = pose.astype(np.float32)
 
         self._state.tcp_vel = np.asarray(
             self._rtde_receive.getActualTCPSpeed(), dtype=np.float32

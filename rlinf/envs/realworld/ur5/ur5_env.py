@@ -21,14 +21,11 @@ from typing import Optional
 import cv2
 import gymnasium as gym
 import numpy as np
-from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Rotation as R, Slerp
 
 from rlinf.envs.realworld.common.camera import Camera, CameraInfo
 from rlinf.envs.realworld.common.video_player import VideoPlayer
-from rlinf.envs.realworld.franka.utils import (
-    clip_euler_to_target_window,
-    quat_slerp,
-)
+from rlinf.envs.realworld.franka.utils import clip_euler_to_target_window
 from rlinf.scheduler import UR5HWInfo, WorkerInfo
 from rlinf.utils.logging import get_logger
 
@@ -110,11 +107,11 @@ class UR5Env(gym.Env):
             self._reset_pose = np.concatenate(
                 [
                     self.config.reset_ee_pose[:3],
-                    R.from_euler("xyz", self.config.reset_ee_pose[3:].copy()).as_quat(),
+                    R.from_euler("xyz", self.config.reset_ee_pose[3:].copy()).as_rotvec(),
                 ]
             ).copy()
         else:
-            self._reset_pose = np.zeros(7)
+            self._reset_pose = np.zeros(6)
 
         self._num_steps = 0
         self._success_hold_counter = 0
@@ -189,8 +186,8 @@ class UR5Env(gym.Env):
         if not self.config.is_dummy:
             self.next_position[3:] = (
                 R.from_euler("xyz", action[3:6] * self.config.action_scale[1])
-                * R.from_quat(self._ur5_state.tcp_pose[3:].copy())
-            ).as_quat()
+                * R.from_rotvec(self._ur5_state.tcp_pose[3:].copy())
+            ).as_rotvec()
 
             gripper_action = action[6] * self.config.action_scale[2]
             is_gripper_action_effective = self._gripper_action(gripper_action)
@@ -226,7 +223,7 @@ class UR5Env(gym.Env):
             return 0.0
 
         euler_angles = np.abs(
-            R.from_quat(self._ur5_state.tcp_pose[3:].copy()).as_euler("xyz")
+            R.from_rotvec(self._ur5_state.tcp_pose[3:].copy()).as_euler("xyz")
         )
         position = np.hstack([self._ur5_state.tcp_pose[:3], euler_angles])
         target_delta = np.abs(position - self.config.target_ee_pose)
@@ -274,7 +271,7 @@ class UR5Env(gym.Env):
             euler_random[-1] += np.random.uniform(
                 -self.config.random_rz_range, self.config.random_rz_range
             )
-            reset_pose[3:] = R.from_euler("xyz", euler_random).as_quat()
+            reset_pose[3:] = R.from_euler("xyz", euler_random).as_rotvec()
         else:
             reset_pose = self._reset_pose.copy()
 
@@ -301,7 +298,7 @@ class UR5Env(gym.Env):
             {
                 "state": gym.spaces.Dict(
                     {
-                        "tcp_pose": gym.spaces.Box(-np.inf, np.inf, shape=(7,)),
+                        "tcp_pose": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
                         "tcp_vel": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
                         "gripper_position": gym.spaces.Box(-1, 1, shape=(1,)),
                         "tcp_force": gym.spaces.Box(-np.inf, np.inf, shape=(3,)),
@@ -375,14 +372,14 @@ class UR5Env(gym.Env):
         position[:3] = np.clip(
             position[:3], self._xyz_safe_space.low, self._xyz_safe_space.high
         )
-        euler = R.from_quat(position[3:].copy()).as_euler("xyz")
+        euler = R.from_rotvec(position[3:].copy()).as_euler("xyz")
         euler = clip_euler_to_target_window(
             euler=euler,
             target_euler=self.config.target_ee_pose[3:],
             lower_euler=self._rpy_safe_space.low,
             upper_euler=self._rpy_safe_space.high,
         )
-        position[3:] = R.from_euler("xyz", euler).as_quat()
+        position[3:] = R.from_euler("xyz", euler).as_rotvec()
         return position
 
     def _clear_error(self):
@@ -411,9 +408,13 @@ class UR5Env(gym.Env):
         num_steps = int(timeout * self.config.step_frequency)
         self._ur5_state = self._controller.get_state().wait()[0]
         pos_path = np.linspace(self._ur5_state.tcp_pose[:3], pose[:3], num_steps + 1)
-        quat_path = quat_slerp(self._ur5_state.tcp_pose[3:], pose[3:], num_steps + 1)
-        for pos, quat in zip(pos_path[1:], quat_path[1:]):
-            interpolated_pose = np.concatenate([pos, quat])
+        key_rots = R.from_rotvec(
+            np.stack([self._ur5_state.tcp_pose[3:], pose[3:]], axis=0)
+        )
+        slerp = Slerp([0.0, 1.0], key_rots)
+        rotvec_path = slerp(np.linspace(0.0, 1.0, num_steps + 1)).as_rotvec()
+        for pos, rotvec in zip(pos_path[1:], rotvec_path[1:]):
+            interpolated_pose = np.concatenate([pos, rotvec])
             self._move_action(interpolated_pose.astype(np.float32))
             time.sleep(1.0 / self.config.step_frequency)
         self._ur5_state = self._controller.get_state().wait()[0]
