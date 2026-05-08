@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 
@@ -26,6 +27,7 @@ class UR5ReachConfig(UR5RobotConfig):
     target_ee_pose: np.ndarray = field(
         default_factory=lambda: np.array([0.45, 0.0, 0.20, 3.14, 0.0, 0.0])
     )
+    reset_ee_pose: Optional[np.ndarray] = None
     reward_threshold: np.ndarray = field(
         default_factory=lambda: np.array([0.01, 0.01, 0.01, 0.2, 0.2, 0.2])
     )
@@ -42,9 +44,10 @@ class UR5ReachConfig(UR5RobotConfig):
     def __post_init__(self):
         self.target_ee_pose = np.array(self.target_ee_pose)
         self.reward_threshold = np.array(self.reward_threshold)
-        self.reset_ee_pose = self.target_ee_pose + np.array(
-            [0.0, 0.0, self.clip_z_range_high, 0.0, 0.0, 0.0]
-        )
+        if self.reset_ee_pose is None:
+            self.reset_ee_pose = self.target_ee_pose.copy()
+        else:
+            self.reset_ee_pose = np.array(self.reset_ee_pose)
         self.action_scale = np.array([0.02, 0.1, 1.0])
         self.ee_pose_limit_min = np.array(
             [
@@ -77,4 +80,4 @@ class UR5ReachEnv(UR5Env):
 
     @property
     def task_description(self):
-        return "Open the book"
+        return "Open the blue book"

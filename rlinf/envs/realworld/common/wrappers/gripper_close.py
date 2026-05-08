@@ -30,7 +30,13 @@ class GripperCloseEnv(gym.ActionWrapper):
 
     def action(self, action: np.ndarray) -> np.ndarray:
         new_action = np.zeros((7,), dtype=np.float32)
-        new_action[:6] = action.copy()
+        action = np.asarray(action, dtype=np.float32)
+        if action.shape == (6,):
+            new_action[:6] = action
+        elif action.shape == (7,):
+            new_action[:6] = action[:6]
+        else:
+            raise ValueError(f"Expected action shape (6,) or (7,), got {action.shape}")
         return new_action
 
     def step(self, action):

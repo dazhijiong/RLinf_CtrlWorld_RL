@@ -20,7 +20,9 @@ from scipy.spatial.transform import Rotation as R
 
 class Quat2EulerWrapper(gym.ObservationWrapper):
     """
-    Convert the quaternion representation of the tcp pose to euler angles
+    Convert the tcp pose orientation to euler angles.
+
+    Supports both ``xyz + quat`` and ``xyz + rotvec`` inputs.
     """
 
     def __init__(self, env: Env):
@@ -31,9 +33,18 @@ class Quat2EulerWrapper(gym.ObservationWrapper):
         )
 
     def observation(self, observation):
-        # convert tcp pose from quat to euler
+        # Convert tcp pose orientation to Euler while preserving xyz.
         tcp_pose = observation["state"]["tcp_pose"]
+        orient = tcp_pose[3:].copy()
+        if orient.shape[0] == 4:
+            euler = R.from_quat(orient).as_euler("xyz")
+        elif orient.shape[0] == 3:
+            euler = R.from_rotvec(orient).as_euler("xyz")
+        else:
+            raise ValueError(
+                f"Expected tcp_pose orientation to have 3 or 4 values, got {orient.shape}."
+            )
         observation["state"]["tcp_pose"] = np.concatenate(
-            (tcp_pose[:3], R.from_quat(tcp_pose[3:].copy()).as_euler("xyz"))
+            (tcp_pose[:3], euler)
         )
         return observation

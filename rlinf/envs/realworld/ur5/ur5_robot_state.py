@@ -21,7 +21,9 @@ import numpy as np
 class UR5RobotState:
     """Robot state for a UR5-like single-arm manipulator."""
 
-    tcp_pose: np.ndarray = field(default_factory=lambda: np.zeros(7))
+    # TCP pose is stored as [x, y, z, rx, ry, rz], where the last 3 values are
+    # the UR rotvec / axis-angle representation returned by ur-rtde.
+    tcp_pose: np.ndarray = field(default_factory=lambda: np.zeros(6))
     tcp_vel: np.ndarray = field(default_factory=lambda: np.zeros(6))
     arm_joint_position: np.ndarray = field(default_factory=lambda: np.zeros(6))
     arm_joint_velocity: np.ndarray = field(default_factory=lambda: np.zeros(6))

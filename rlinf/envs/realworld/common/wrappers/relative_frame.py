@@ -96,13 +96,22 @@ class RelativeFrame(gym.Wrapper):
             obs["state"]["tcp_vel"] = adjoint_inv @ obs["state"]["tcp_vel"]
 
         if self.include_relative_pose:
+            pose_repr_dim = obs["state"]["tcp_pose"].shape[0] - 3
             T_b_o = construct_homogeneous_matrix(obs["state"]["tcp_pose"])
             T_r_o = self.T_b_r_inv @ T_b_o
 
             # Reconstruct transformed tcp_pose vector
             p_r_o = T_r_o[:3, 3]
-            quat_r_o = R.from_matrix(T_r_o[:3, :3].copy()).as_quat()
-            obs["state"]["tcp_pose"] = np.concatenate((p_r_o, quat_r_o))
+            rotation = R.from_matrix(T_r_o[:3, :3].copy())
+            if pose_repr_dim == 4:
+                orientation = rotation.as_quat()
+            elif pose_repr_dim == 3:
+                orientation = rotation.as_rotvec()
+            else:
+                raise ValueError(
+                    f"Expected tcp_pose to contain 3D or 4D orientation, got {pose_repr_dim}."
+                )
+            obs["state"]["tcp_pose"] = np.concatenate((p_r_o, orientation))
 
         return obs
 

@@ -17,7 +17,6 @@ import time
 from typing import Optional
 
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 
 from rlinf.scheduler import Cluster, NodePlacementStrategy, Worker
 from rlinf.utils.logging import get_logger
@@ -79,11 +78,24 @@ class CustomUR5Controller(Worker):
         tcp_offset: Optional[list[float]] = None,
         move_acc: float = 0.25,
         move_vel: float = 0.25,
+        use_servo: bool = True,
+        servo_time: float = 0.1,
+        servo_lookahead_time: float = 0.1,
+        servo_gain: int = 600,
     ):
         cluster = Cluster()
         placement = NodePlacementStrategy(node_ranks=[node_rank])
         return CustomUR5Controller.create_group(
-            robot_ip, gripper_type, gripper_port, tcp_offset, move_acc, move_vel
+            robot_ip,
+            gripper_type,
+            gripper_port,
+            tcp_offset,
+            move_acc,
+            move_vel,
+            use_servo,
+            servo_time,
+            servo_lookahead_time,
+            servo_gain,
         ).launch(
             cluster=cluster,
             placement_strategy=placement,
@@ -98,6 +110,10 @@ class CustomUR5Controller(Worker):
         tcp_offset: Optional[list[float]] = None,
         move_acc: float = 0.25,
         move_vel: float = 0.25,
+        use_servo: bool = True,
+        servo_time: float = 0.1,
+        servo_lookahead_time: float = 0.1,
+        servo_gain: int = 600,
     ):
         super().__init__()
         self._logger = get_logger()
@@ -107,6 +123,17 @@ class CustomUR5Controller(Worker):
         self._tcp_offset = tcp_offset
         self._move_acc = move_acc
         self._move_vel = move_vel
+        self._use_servo = use_servo
+        self._servo_time = servo_time
+        self._servo_lookahead_time = servo_lookahead_time
+        self._servo_gain = int(np.clip(servo_gain, 100, 2000))
+        if self._servo_gain != servo_gain:
+            self._logger.warning(
+                "Clipped UR5 servo_gain from %s to %s. UR RTDE servoL "
+                "requires gain within [100, 2000].",
+                servo_gain,
+                self._servo_gain,
+            )
         self._state = UR5RobotState()
         self._gripper_open = False
         self._robotiq_client: Optional[RobotiqSocketClient] = None
@@ -172,6 +199,25 @@ class CustomUR5Controller(Worker):
             pass
         return True
 
+    def _ensure_control_script_running(self):
+        if hasattr(self._rtde_control, "isConnected") and not self._rtde_control.isConnected():
+            raise RuntimeError("UR5 RTDE control interface is not connected.")
+        if hasattr(self._rtde_control, "isProgramRunning") and not self._rtde_control.isProgramRunning():
+            self._logger.warning(
+                "UR5 RTDE control script is not running; trying reuploadScript()."
+            )
+            ok = self._rtde_control.reuploadScript()
+            if not ok:
+                raise RuntimeError("Failed to reupload UR5 RTDE control script.")
+            time.sleep(0.1)
+            if (
+                hasattr(self._rtde_control, "isProgramRunning")
+                and not self._rtde_control.isProgramRunning()
+            ):
+                raise RuntimeError(
+                    "UR5 RTDE control script is still not running after reuploadScript()."
+                )
+
     def reconfigure_compliance_params(self, params: dict[str, float]):
         # ur_rtde does not expose Franka-style compliance tuning. Keep this as a
         # no-op so the realworld env can share the same control flow.
@@ -183,9 +229,44 @@ class CustomUR5Controller(Worker):
 
     def move_arm(self, pose: np.ndarray):
         pose = np.asarray(pose, dtype=np.float64)
-        rotvec = R.from_quat(pose[3:]).as_rotvec()
-        target_pose = np.concatenate([pose[:3], rotvec])
-        self._rtde_control.moveL(target_pose, self._move_vel, self._move_acc)
+        self._ensure_control_script_running()
+        if self._use_servo:
+            self._rtde_control.servoL(
+                pose,
+                self._move_vel,
+                self._move_acc,
+                self._servo_time,
+                self._servo_lookahead_time,
+                self._servo_gain,
+            )
+        else:
+            self._rtde_control.moveL(pose, self._move_vel, self._move_acc)
+        return True
+
+    def servo_arm(
+        self,
+        pose: np.ndarray,
+        duration: float = 3.0,
+        velocity: Optional[float] = None,
+        acceleration: Optional[float] = None,
+    ):
+        pose = np.asarray(pose, dtype=np.float64)
+        velocity = self._move_vel if velocity is None else float(velocity)
+        acceleration = self._move_acc if acceleration is None else float(acceleration)
+        self._ensure_control_script_running()
+        deadline = time.time() + max(float(duration), self._servo_time)
+        while time.time() < deadline:
+            ok = self._rtde_control.servoL(
+                pose,
+                velocity,
+                acceleration,
+                self._servo_time,
+                self._servo_lookahead_time,
+                self._servo_gain,
+            )
+            if ok is False:
+                raise RuntimeError(f"UR5 servoL reset command was rejected: {pose}")
+            time.sleep(self._servo_time)
         return True
 
     def open_gripper(self):
@@ -200,7 +281,7 @@ class CustomUR5Controller(Worker):
                 self._rtde_io.setToolDigitalOut(0, True)
             except Exception as exc:
                 self._logger.warning(f"Failed to set UR5 gripper open IO: {exc}")
-        self._state.gripper_position = 1.0
+        self._state.gripper_position = 0.0
         self._state.gripper_open = True
         return True
 
@@ -216,14 +297,13 @@ class CustomUR5Controller(Worker):
                 self._rtde_io.setToolDigitalOut(0, False)
             except Exception as exc:
                 self._logger.warning(f"Failed to set UR5 gripper close IO: {exc}")
-        self._state.gripper_position = 0.0
+        self._state.gripper_position = 1.0
         self._state.gripper_open = False
         return True
 
     def get_state(self) -> UR5RobotState:
         pose = np.asarray(self._rtde_receive.getActualTCPPose(), dtype=np.float64)
-        quat = R.from_rotvec(pose[3:]).as_quat()
-        self._state.tcp_pose = np.concatenate([pose[:3], quat]).astype(np.float32)
+        self._state.tcp_pose = pose.astype(np.float32)
 
         self._state.tcp_vel = np.asarray(
             self._rtde_receive.getActualTCPSpeed(), dtype=np.float32
@@ -243,7 +323,7 @@ class CustomUR5Controller(Worker):
             self._state.tcp_torque = tcp_wrench[3:6]
 
         self._state.gripper_open = self._gripper_open
-        self._state.gripper_position = 1.0 if self._gripper_open else 0.0
+        self._state.gripper_position = 0.0 if self._gripper_open else 1.0
         return self._state
 
     def __del__(self):
