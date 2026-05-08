@@ -51,5 +51,13 @@ class VideoPlayer:
                 [v for k, v in img_array.items() if "full" not in k], axis=0
             )
 
-            cv2.imshow("RealSense Cameras", frame)
-            cv2.waitKey(1)
+            try:
+                cv2.imshow("RealSense Cameras", frame)
+                cv2.waitKey(1)
+            except cv2.error as exc:
+                warnings.warn(
+                    "OpenCV highgui is unavailable. VideoPlayer will stop. "
+                    f"Original error: {exc}"
+                )
+                self.is_running = False
+                break

@@ -16,9 +16,9 @@
 """Replay UR5 end-effector trajectories from an RLinf replay buffer.
 
 This bypasses pi05 entirely. It reads flattened action chunks from replay-buffer
-trajectory files, interprets them as absolute ``[x, y, z, rx, ry, rz, gripper]``
- waypoints in Euler convention, converts orientation to UR rotvec, and sends the
-result directly to the UR5 RTDE controller.
+trajectory files and replays absolute ``[x, y, z, r1, r2, r3, gripper]``
+waypoints. Orientation can be interpreted either as Euler angles or as the UR
+axis-angle / rotvec convention used by ``getActualTCPPose()``.
 
 The script defaults to dry-run. Add ``--execute`` to move the robot.
 """
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pickle
 import time
 from pathlib import Path
 
@@ -119,6 +120,34 @@ def _load_waypoints(
     return chunk_actions.reshape(-1, action_dim)
 
 
+def _load_pkl(path: Path) -> dict:
+    with path.open("rb") as f:
+        return pickle.load(f)
+
+
+def _load_pkl_waypoints(
+    pkl_dir: Path,
+    pkl_key: str,
+    action_dim: int,
+) -> np.ndarray:
+    frame_paths = sorted(pkl_dir.glob("*.pkl"))
+    if not frame_paths:
+        raise FileNotFoundError(f"No .pkl files found under {pkl_dir}")
+
+    waypoints = []
+    for frame_path in frame_paths:
+        frame = _load_pkl(frame_path)
+        if pkl_key not in frame:
+            raise KeyError(f"Missing key '{pkl_key}' in {frame_path}")
+        waypoint = np.asarray(frame[pkl_key], dtype=np.float32)
+        if waypoint.shape != (action_dim,):
+            raise ValueError(
+                f"Expected {pkl_key} shape {(action_dim,)}, got {waypoint.shape} in {frame_path}"
+            )
+        waypoints.append(waypoint)
+    return np.stack(waypoints, axis=0)
+
+
 def _summarize_waypoints(waypoints: np.ndarray) -> None:
     xyz = waypoints[:, :3]
     euler = waypoints[:, 3:6]
@@ -131,6 +160,17 @@ def _summarize_waypoints(waypoints: np.ndarray) -> None:
     print(f"  euler min: {np.round(euler.min(axis=0), 6).tolist()}")
     print(f"  euler max: {np.round(euler.max(axis=0), 6).tolist()}")
     print(f"  gripper min/max: {gripper.min():.6f} / {gripper.max():.6f}")
+
+
+def _pose_to_rotvec(
+    pose_orientation: np.ndarray,
+    orientation_mode: str,
+) -> np.ndarray:
+    if orientation_mode == "euler":
+        return R.from_euler("xyz", pose_orientation).as_rotvec()
+    if orientation_mode == "rotvec":
+        return np.asarray(pose_orientation, dtype=np.float64)
+    raise ValueError(f"Unsupported orientation_mode: {orientation_mode}")
 
 
 def _interpolate_pose_sequence(
@@ -164,7 +204,8 @@ def _maybe_apply_gripper(
     gripper_value: float,
     threshold: float,
 ) -> None:
-    if gripper_value >= threshold:
+    # GELLO records gripper as 0=open, 1=closed.
+    if gripper_value <= threshold:
         controller.open_gripper().wait()
     else:
         controller.close_gripper().wait()
@@ -174,6 +215,7 @@ def _execute_waypoints(
     controller,
     waypoints: np.ndarray,
     *,
+    orientation_mode: str,
     gripper_threshold: float,
     initial_move_seconds: float,
     step_sleep: float,
@@ -181,9 +223,12 @@ def _execute_waypoints(
     controller.clear_errors().wait()
     current_pose = np.asarray(controller.get_state().wait()[0].tcp_pose, dtype=np.float64)
 
-    first_pose_euler = waypoints[0, :6]
+    first_pose = waypoints[0, :6]
     first_pose_rotvec = np.concatenate(
-        [first_pose_euler[:3], R.from_euler("xyz", first_pose_euler[3:6]).as_rotvec()]
+        [
+            first_pose[:3],
+            _pose_to_rotvec(first_pose[3:6], orientation_mode=orientation_mode),
+        ]
     )
     if initial_move_seconds > 0:
         num_steps = max(2, int(round(initial_move_seconds / max(step_sleep, 1e-3))))
@@ -200,10 +245,10 @@ def _execute_waypoints(
         time.sleep(step_sleep)
 
     for idx, waypoint in enumerate(waypoints):
-        pose_euler = waypoint[:6]
+        pose = waypoint[:6]
         gripper_value = float(waypoint[6])
         pose_rotvec = np.concatenate(
-            [pose_euler[:3], R.from_euler("xyz", pose_euler[3:6]).as_rotvec()]
+            [pose[:3], _pose_to_rotvec(pose[3:6], orientation_mode=orientation_mode)]
         ).astype(np.float32)
         controller.clear_errors().wait()
         controller.move_arm(pose_rotvec).wait()
@@ -214,11 +259,22 @@ def _execute_waypoints(
         )
         print(
             f"[{idx + 1:04d}/{len(waypoints):04d}] "
-            f"xyz={np.round(pose_euler[:3], 6).tolist()} "
-            f"euler={np.round(pose_euler[3:6], 6).tolist()} "
+            f"xyz={np.round(pose[:3], 6).tolist()} "
+            f"{orientation_mode}={np.round(pose[3:6], 6).tolist()} "
             f"gripper={gripper_value:.6f}"
         )
         time.sleep(step_sleep)
+
+
+def _reset_robot_joints(
+    controller,
+    reset_joints: np.ndarray,
+    settle_seconds: float,
+) -> None:
+    controller.clear_errors().wait()
+    controller.reset_joint(reset_joints.astype(np.float32).tolist()).wait()
+    if settle_seconds > 0:
+        time.sleep(settle_seconds)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -237,15 +293,45 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Direct path to a trajectory_*.pt file. Overrides --replay-dir/--rank/--trajectory-id.",
     )
+    parser.add_argument(
+        "--pkl-dir",
+        type=Path,
+        default=None,
+        help="Directory of raw GELLO .pkl frames. Replays one frame at a time in filename order.",
+    )
+    parser.add_argument(
+        "--pkl-key",
+        default="ee_pos_quat",
+        help="Frame key to replay from raw .pkl files. Default uses absolute EEF pose.",
+    )
     parser.add_argument("--rank", default="rank_0", help="Rank directory under replay buffer.")
     parser.add_argument("--trajectory-id", type=int, default=0, help="Trajectory id inside the rank directory.")
     parser.add_argument("--batch-index", type=int, default=0, help="Batch index inside the stored trajectory.")
     parser.add_argument("--action-dim", type=int, default=7, help="Per-waypoint action dimension.")
+    parser.add_argument(
+        "--orientation-mode",
+        choices=("euler", "rotvec"),
+        default="rotvec",
+        help="Interpret waypoint orientation as Euler XYZ angles or UR rotvec axis-angle.",
+    )
     parser.add_argument("--list", action="store_true", help="List replay buffer contents and exit.")
     parser.add_argument(
         "--robot-ip",
         default="192.168.1.60",
         help="UR5 IP address. Only used with --execute.",
+    )
+    parser.add_argument(
+        "--reset-joints",
+        type=float,
+        nargs=6,
+        default=[0.0, -1.57, 1.57, -1.57, -1.57, 0.0],
+        help="Joint-space reset pose applied with moveJ before replay starts.",
+    )
+    parser.add_argument(
+        "--reset-settle-seconds",
+        type=float,
+        default=1.0,
+        help="Sleep after reset_joint before starting trajectory replay.",
     )
     parser.add_argument(
         "--gripper-port",
@@ -295,22 +381,30 @@ def main() -> None:
     args = _build_parser().parse_args()
 
     replay_dir = args.replay_dir.expanduser().resolve()
+    pkl_dir = None if args.pkl_dir is None else args.pkl_dir.expanduser().resolve()
     if args.list:
         _list_replay_buffer(replay_dir)
         return
 
-    trajectory_path = (
-        args.trajectory_path.expanduser().resolve()
-        if args.trajectory_path is not None
-        else _resolve_trajectory_path(replay_dir, args.rank, args.trajectory_id)
-    )
-
-    print(f"Trajectory file: {trajectory_path}")
-    waypoints = _load_waypoints(
-        trajectory_path=trajectory_path,
-        batch_index=args.batch_index,
-        action_dim=args.action_dim,
-    )
+    if pkl_dir is not None:
+        print(f"PKL directory: {pkl_dir}")
+        waypoints = _load_pkl_waypoints(
+            pkl_dir=pkl_dir,
+            pkl_key=args.pkl_key,
+            action_dim=args.action_dim,
+        )
+    else:
+        trajectory_path = (
+            args.trajectory_path.expanduser().resolve()
+            if args.trajectory_path is not None
+            else _resolve_trajectory_path(replay_dir, args.rank, args.trajectory_id)
+        )
+        print(f"Trajectory file: {trajectory_path}")
+        waypoints = _load_waypoints(
+            trajectory_path=trajectory_path,
+            batch_index=args.batch_index,
+            action_dim=args.action_dim,
+        )
     _summarize_waypoints(waypoints)
 
     if not args.execute:
@@ -329,9 +423,16 @@ def main() -> None:
         move_vel=args.move_vel,
     )
     try:
+        print(f"Resetting robot joints: {np.round(args.reset_joints, 6).tolist()}")
+        _reset_robot_joints(
+            controller,
+            reset_joints=np.asarray(args.reset_joints, dtype=np.float32),
+            settle_seconds=args.reset_settle_seconds,
+        )
         _execute_waypoints(
             controller,
             waypoints,
+            orientation_mode=args.orientation_mode,
             gripper_threshold=args.gripper_threshold,
             initial_move_seconds=args.initial_move_seconds,
             step_sleep=args.step_sleep,

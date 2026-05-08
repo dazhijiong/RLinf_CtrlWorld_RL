@@ -48,6 +48,17 @@ class UR5RobotConfig:
     tcp_offset: Optional[list[float]] = None
     move_acc: float = 0.25
     move_vel: float = 0.25
+    pose_orientation_type: str = "euler"
+    use_servo: bool = True
+    servo_time: Optional[float] = None
+    servo_lookahead_time: float = 0.1
+    servo_gain: int = 600
+    reset_servo_duration: float = 3.0
+    reset_servo_vel: float = 0.03
+    reset_servo_acc: float = 0.05
+    enable_action_delta_limit: bool = True
+    max_action_pos_delta: float = 0.001
+    max_action_rot_delta: float = 0.005
 
     is_dummy: bool = False
     use_dense_reward: bool = False
@@ -104,12 +115,7 @@ class UR5Env(gym.Env):
 
         self._ur5_state = UR5RobotState()
         if not self.config.is_dummy:
-            self._reset_pose = np.concatenate(
-                [
-                    self.config.reset_ee_pose[:3],
-                    R.from_euler("xyz", self.config.reset_ee_pose[3:].copy()).as_rotvec(),
-                ]
-            ).copy()
+            self._reset_pose = self._to_rtde_pose(self.config.reset_ee_pose).copy()
         else:
             self._reset_pose = np.zeros(6)
 
@@ -135,7 +141,7 @@ class UR5Env(gym.Env):
                     f"Waited {time.time() - start_time} seconds for UR5 robot to be ready."
                 )
 
-        self._interpolate_move(self._reset_pose)
+        self._servo_reset_to_pose(self._reset_pose)
         time.sleep(0.5)
         self._ur5_state = self._controller.get_state().wait()[0]
         self._open_cameras()
@@ -170,26 +176,39 @@ class UR5Env(gym.Env):
             tcp_offset=self.config.tcp_offset,
             move_acc=self.config.move_acc,
             move_vel=self.config.move_vel,
+            use_servo=self.config.use_servo,
+            servo_time=self.config.servo_time
+            if self.config.servo_time is not None
+            else 1.0 / self.config.step_frequency,
+            servo_lookahead_time=self.config.servo_lookahead_time,
+            servo_gain=self.config.servo_gain,
+        )
+
+    def _to_rtde_pose(self, pose: np.ndarray) -> np.ndarray:
+        pose = np.asarray(pose, dtype=np.float64)
+        if self.config.pose_orientation_type == "rotvec":
+            return pose.copy()
+        if self.config.pose_orientation_type == "euler":
+            return np.concatenate(
+                [pose[:3], R.from_euler("xyz", pose[3:].copy()).as_rotvec()]
+            )
+        raise ValueError(
+            f"Unsupported pose_orientation_type: {self.config.pose_orientation_type}. "
+            "Expected 'euler' or 'rotvec'."
         )
 
     def step(self, action: np.ndarray):
         start_time = time.time()
 
+        action = np.asarray(action, dtype=np.float32)
         action = np.clip(action, self.action_space.low, self.action_space.high)
-        xyz_delta = action[:3]
 
-        self.next_position = self._ur5_state.tcp_pose.copy()
-        self.next_position[:3] = (
-            self.next_position[:3] + xyz_delta * self.config.action_scale[0]
-        )
+        self.next_position = action[:6].copy()
 
         if not self.config.is_dummy:
-            self.next_position[3:] = (
-                R.from_euler("xyz", action[3:6] * self.config.action_scale[1])
-                * R.from_rotvec(self._ur5_state.tcp_pose[3:].copy())
-            ).as_rotvec()
-
-            gripper_action = action[6] * self.config.action_scale[2]
+            self._ur5_state = self._controller.get_state().wait()[0]
+            self.next_position = self._limit_action_delta(self.next_position)
+            gripper_action = float(action[6])
             is_gripper_action_effective = self._gripper_action(gripper_action)
             self._move_action(self._clip_position_to_safety_box(self.next_position))
         else:
@@ -210,6 +229,33 @@ class UR5Env(gym.Env):
         truncated = self._num_steps >= self.config.max_num_steps
         return observation, reward, terminated, truncated, {}
 
+    def _limit_action_delta(self, target_pose: np.ndarray) -> np.ndarray:
+        if not self.config.enable_action_delta_limit:
+            return target_pose
+
+        current_pose = np.asarray(self._ur5_state.tcp_pose, dtype=np.float64)
+        target_pose = np.asarray(target_pose, dtype=np.float64).copy()
+
+        pos_delta = target_pose[:3] - current_pose[:3]
+        pos_delta_norm = np.linalg.norm(pos_delta)
+        if pos_delta_norm > self.config.max_action_pos_delta > 0:
+            target_pose[:3] = current_pose[:3] + (
+                pos_delta / pos_delta_norm * self.config.max_action_pos_delta
+            )
+
+        current_rot = R.from_rotvec(current_pose[3:])
+        target_rot = R.from_rotvec(target_pose[3:])
+        rel_rot = target_rot * current_rot.inv()
+        rot_delta = rel_rot.as_rotvec()
+        rot_delta_norm = np.linalg.norm(rot_delta)
+        if rot_delta_norm > self.config.max_action_rot_delta > 0:
+            limited_rot = R.from_rotvec(
+                rot_delta / rot_delta_norm * self.config.max_action_rot_delta
+            )
+            target_pose[3:] = (limited_rot * current_rot).as_rotvec()
+
+        return target_pose.astype(np.float32)
+
     @property
     def num_steps(self):
         return self._num_steps
@@ -222,11 +268,9 @@ class UR5Env(gym.Env):
         if self.config.is_dummy:
             return 0.0
 
-        euler_angles = np.abs(
-            R.from_rotvec(self._ur5_state.tcp_pose[3:].copy()).as_euler("xyz")
-        )
-        position = np.hstack([self._ur5_state.tcp_pose[:3], euler_angles])
-        target_delta = np.abs(position - self.config.target_ee_pose)
+        target_pose = self._to_rtde_pose(self.config.target_ee_pose)
+        position = self._ur5_state.tcp_pose.copy()
+        target_delta = np.abs(position - target_pose)
         is_in_target_zone = np.all(target_delta[:3] <= self.config.reward_threshold[:3])
 
         if is_in_target_zone:
@@ -267,18 +311,67 @@ class UR5Env(gym.Env):
             reset_pose[:2] += np.random.uniform(
                 -self.config.random_xy_range, self.config.random_xy_range, (2,)
             )
-            euler_random = self.config.target_ee_pose[3:].copy()
-            euler_random[-1] += np.random.uniform(
-                -self.config.random_rz_range, self.config.random_rz_range
-            )
-            reset_pose[3:] = R.from_euler("xyz", euler_random).as_rotvec()
+            if self.config.pose_orientation_type == "euler":
+                euler_random = self.config.target_ee_pose[3:].copy()
+                euler_random[-1] += np.random.uniform(
+                    -self.config.random_rz_range, self.config.random_rz_range
+                )
+                reset_pose[3:] = R.from_euler("xyz", euler_random).as_rotvec()
+            elif self.config.random_rz_range != 0:
+                self._logger.warning(
+                    "Ignoring random_rz_range for rotvec reset pose orientation."
+                )
         else:
             reset_pose = self._reset_pose.copy()
 
+        self._servo_reset_to_pose(reset_pose)
+
+    def _servo_reset_to_pose(self, pose: np.ndarray):
         self._ur5_state = self._controller.get_state().wait()[0]
-        self._interpolate_move(reset_pose)
+        start_pose = self._ur5_state.tcp_pose.copy()
+        self._logger.warning(
+            "Starting UR5 servo reset: current_pose=%s target_pose=%s "
+            "duration=%.3f velocity=%.3f acceleration=%.3f",
+            np.round(start_pose, 6).tolist(),
+            np.round(pose, 6).tolist(),
+            self.config.reset_servo_duration,
+            self.config.reset_servo_vel,
+            self.config.reset_servo_acc,
+        )
+        num_steps = max(
+            2, int(round(self.config.reset_servo_duration * self.config.step_frequency))
+        )
+        pos_path = np.linspace(start_pose[:3], pose[:3], num_steps + 1)
+        key_rots = R.from_rotvec(np.stack([start_pose[3:], pose[3:]], axis=0))
+        slerp = Slerp([0.0, 1.0], key_rots)
+        rotvec_path = slerp(np.linspace(0.0, 1.0, num_steps + 1)).as_rotvec()
+        step_duration = self.config.reset_servo_duration / num_steps
+        for pos, rotvec in zip(pos_path[1:], rotvec_path[1:]):
+            waypoint = np.concatenate([pos, rotvec]).astype(np.float32)
+            self._controller.servo_arm(
+                waypoint,
+                duration=step_duration,
+                velocity=self.config.reset_servo_vel,
+                acceleration=self.config.reset_servo_acc,
+            ).wait()
+        self._ur5_state = self._controller.get_state().wait()[0]
+        pose_error = np.asarray(self._ur5_state.tcp_pose) - np.asarray(pose)
+        self._logger.warning(
+            "Finished UR5 servo reset: current_pose=%s target_pose=%s error=%s",
+            np.round(self._ur5_state.tcp_pose, 6).tolist(),
+            np.round(pose, 6).tolist(),
+            np.round(pose_error, 6).tolist(),
+        )
 
     def _init_action_obs_spaces(self):
+        self._has_xyz_safe_limits = bool(
+            np.any(self.config.ee_pose_limit_min[:3] != 0)
+            or np.any(self.config.ee_pose_limit_max[:3] != 0)
+        )
+        self._has_rpy_safe_limits = bool(
+            np.any(self.config.ee_pose_limit_min[3:] != 0)
+            or np.any(self.config.ee_pose_limit_max[3:] != 0)
+        )
         self._xyz_safe_space = gym.spaces.Box(
             low=self.config.ee_pose_limit_min[:3],
             high=self.config.ee_pose_limit_max[:3],
@@ -290,8 +383,9 @@ class UR5Env(gym.Env):
             dtype=np.float64,
         )
         self.action_space = gym.spaces.Box(
-            np.ones((7,), dtype=np.float32) * -1,
-            np.ones((7,), dtype=np.float32),
+            low=np.array([-np.inf] * 6 + [0.0], dtype=np.float32),
+            high=np.array([np.inf] * 6 + [1.0], dtype=np.float32),
+            dtype=np.float32,
         )
 
         self.observation_space = gym.spaces.Dict(
@@ -300,7 +394,7 @@ class UR5Env(gym.Env):
                     {
                         "tcp_pose": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
                         "tcp_vel": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
-                        "gripper_position": gym.spaces.Box(-1, 1, shape=(1,)),
+                        "gripper_position": gym.spaces.Box(0, 1, shape=(1,)),
                         "tcp_force": gym.spaces.Box(-np.inf, np.inf, shape=(3,)),
                         "tcp_torque": gym.spaces.Box(-np.inf, np.inf, shape=(3,)),
                     }
@@ -369,17 +463,19 @@ class UR5Env(gym.Env):
         return frames
 
     def _clip_position_to_safety_box(self, position: np.ndarray) -> np.ndarray:
-        position[:3] = np.clip(
-            position[:3], self._xyz_safe_space.low, self._xyz_safe_space.high
-        )
-        euler = R.from_rotvec(position[3:].copy()).as_euler("xyz")
-        euler = clip_euler_to_target_window(
-            euler=euler,
-            target_euler=self.config.target_ee_pose[3:],
-            lower_euler=self._rpy_safe_space.low,
-            upper_euler=self._rpy_safe_space.high,
-        )
-        position[3:] = R.from_euler("xyz", euler).as_rotvec()
+        if self._has_xyz_safe_limits:
+            position[:3] = np.clip(
+                position[:3], self._xyz_safe_space.low, self._xyz_safe_space.high
+            )
+        if self._has_rpy_safe_limits:
+            euler = R.from_rotvec(position[3:].copy()).as_euler("xyz")
+            euler = clip_euler_to_target_window(
+                euler=euler,
+                target_euler=self.config.target_ee_pose[3:],
+                lower_euler=self._rpy_safe_space.low,
+                upper_euler=self._rpy_safe_space.high,
+            )
+            position[3:] = R.from_euler("xyz", euler).as_rotvec()
         return position
 
     def _clear_error(self):
@@ -389,17 +485,17 @@ class UR5Env(gym.Env):
         if not is_binary:
             raise NotImplementedError("Non-binary gripper action is not implemented.")
         if (
-            position <= -self.config.binary_gripper_threshold
-            and self._ur5_state.gripper_open
-        ):
-            self._controller.close_gripper().wait()
-            time.sleep(0.2)
-            return True
-        if (
-            position >= self.config.binary_gripper_threshold
+            position <= self.config.binary_gripper_threshold
             and not self._ur5_state.gripper_open
         ):
             self._controller.open_gripper().wait()
+            time.sleep(0.2)
+            return True
+        if (
+            position > self.config.binary_gripper_threshold
+            and self._ur5_state.gripper_open
+        ):
+            self._controller.close_gripper().wait()
             time.sleep(0.2)
             return True
         return False

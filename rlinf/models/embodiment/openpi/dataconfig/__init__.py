@@ -202,7 +202,7 @@ _CONFIGS = [
         ),
         data=LeRobotUR5RealWorldDataConfig(
             repo_id="ur5_realworld",
-            default_prompt="Control the UR5 robot to complete the task.",
+            default_prompt="open the book",
             base_config=DataConfig(prompt_from_task=True),
             assets=AssetsConfig(
                 assets_dir="checkpoints/torch/pi05_ur5_realworld/assets",

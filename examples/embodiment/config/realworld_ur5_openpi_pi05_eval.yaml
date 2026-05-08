@@ -31,8 +31,8 @@ cluster:
         type: UR5
         configs:
           - robot_ip: 192.168.1.60
-            # RLinf maps serials by order: wrist_1 -> base_0_rgb, wrist_2 -> left_wrist_0_rgb, wrist_3 -> right_wrist_0_rgb.
-            camera_serials: ["230322273810", "819612070593", "218622277783"]
+            # RLinf maps serials by order: wrist_1 -> base_0_rgb, wrist_2 -> left_wrist_0_rgb.
+            camera_serials: ["218622277783", "819612070593"]
             node_rank: 0
 
 runner:
@@ -111,19 +111,28 @@ env:
     max_episode_steps: 100
     max_steps_per_rollout_epoch: 100
     group_size: 1
+    no_gripper: False
+    use_spacemouse: False
     override_cfg:
       is_dummy: False
       controller_backend: "custom"
       controller_cls_path: "rlinf.envs.realworld.ur5.ur_rtde_controller:CustomUR5Controller"
       robot_ip: 192.168.1.60
-      # RLinf maps serials by order: wrist_1 -> base_0_rgb, wrist_2 -> left_wrist_0_rgb, wrist_3 -> right_wrist_0_rgb.
-      camera_serials: ["230322273810", "819612070593", "218622277783"]
       gripper_type: "robotiq"
       gripper_port: 63352
       tcp_offset: null
-      move_acc: 0.25
-      move_vel: 0.25
-      target_ee_pose: [-0.48651, -0.10818, 0.25066, 2.224, 2.230, 0.012]
+      move_acc: 0.005
+      move_vel: 0.003
+      servo_lookahead_time: 0.2
+      servo_gain: 100
+      enable_action_delta_limit: True
+      max_action_pos_delta: 0.001
+      max_action_rot_delta: 0.005
+      enable_camera_player: False
+      pose_orientation_type: "rotvec"
+      use_servo: True
+      target_ee_pose: [0, 0, 0, 0, 0, 0]
+      enable_random_reset: False
   eval:
     total_num_envs: 1
     auto_reset: True
@@ -132,6 +141,8 @@ env:
     max_steps_per_rollout_epoch: 100
     group_size: 1
     is_eval: True
+    no_gripper: False
+    use_spacemouse: False
     video_cfg:
       save_video: True
       video_base_dir: ${runner.logger.log_path}/video/eval
@@ -140,14 +151,25 @@ env:
       controller_backend: "custom"
       controller_cls_path: "rlinf.envs.realworld.ur5.ur_rtde_controller:CustomUR5Controller"
       robot_ip: 192.168.1.60
-      # RLinf maps serials by order: wrist_1 -> base_0_rgb, wrist_2 -> left_wrist_0_rgb, wrist_3 -> right_wrist_0_rgb.
-      camera_serials: ["230322273810", "819612070593", "218622277783"]
       gripper_type: "robotiq"
       gripper_port: 63352
       tcp_offset: null
-      move_acc: 0.25
-      move_vel: 0.25
-      target_ee_pose: [-0.48651, -0.10818, 0.25066, 2.224, 2.230, 0.012]
+      move_acc: 0.005
+      move_vel: 0.003
+      servo_lookahead_time: 0.2
+      servo_gain: 100
+      enable_action_delta_limit: True
+      max_action_pos_delta: 0.001
+      max_action_rot_delta: 0.005
+      enable_camera_player: False
+      pose_orientation_type: "rotvec"
+      use_servo: True
+      target_ee_pose: [-0.48572, -0.11182, 0.43350, 2.224, 2.238, 0.012]
+      reset_ee_pose: [-0.48572, -0.11182, 0.43350, 2.224, 2.238, 0.012]
+      reset_servo_duration: 5.0
+      reset_servo_vel: 0.03
+      reset_servo_acc: 0.05
+      enable_random_reset: False
 
 rollout:
   group_name: "RolloutGroup"
@@ -157,7 +179,7 @@ rollout:
   pipeline_stage_num: 1
 
   model:
-    model_path: ${oc.env:REPO_PATH}/models/pi05_book_sft_filtered_step600_local
+    model_path: ${oc.env:REPO_PATH}/models/pi05_book_sft_step3000_local
     precision: ${actor.model.precision}
 
 actor:
@@ -169,7 +191,7 @@ actor:
   enable_offload: False
 
   model:
-    model_path: ${oc.env:REPO_PATH}/models/pi05_book_sft_filtered_step600_local
+    model_path: ${oc.env:REPO_PATH}/models/pi05_book_sft_step3000_local
     model_type: "openpi"
     action_dim: 7
     num_action_chunks: 10
@@ -177,8 +199,8 @@ actor:
     num_steps: 5
     openpi:
       config_name: "pi05_book"
-      norm_stats_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_book_sft_step3000_local/lerobot_book/norm_stats.json"
-      num_images_in_input: 3
+      norm_stats_path: "/home/manager/sl/RLinf_CtrlWorld_RL/models/pi05_book_sft_step3000_local/lerobot_book/norm_stats.json"
+      num_images_in_input: 2
       value_after_vlm: True
       noise_method: "flow_noise"
       action_horizon: 10

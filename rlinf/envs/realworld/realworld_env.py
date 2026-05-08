@@ -231,6 +231,8 @@ class RealWorldEnv(gym.Env):
         raw_images.pop(self.main_image_key)
 
         remaining_images = list(raw_images.values())
+        obs["wrist_images"] = None
+        obs["extra_view_images"] = None
         if remaining_images:
             # Keep the first non-main camera as the wrist view so realworld envs
             # match the common embodied observation contract.

@@ -54,6 +54,10 @@ class UR5Controller(Worker):
         tcp_offset: Optional[list[float]] = None,
         move_acc: float = 0.25,
         move_vel: float = 0.25,
+        use_servo: bool = True,
+        servo_time: float = 0.1,
+        servo_lookahead_time: float = 0.1,
+        servo_gain: int = 600,
     ):
         if controller_cls_path:
             controller_cls = _import_object(controller_cls_path)
@@ -71,6 +75,10 @@ class UR5Controller(Worker):
                 tcp_offset=tcp_offset,
                 move_acc=move_acc,
                 move_vel=move_vel,
+                use_servo=use_servo,
+                servo_time=servo_time,
+                servo_lookahead_time=servo_lookahead_time,
+                servo_gain=servo_gain,
             )
 
         cluster = Cluster()
@@ -110,6 +118,17 @@ class UR5Controller(Worker):
         return True
 
     def move_arm(self, pose: np.ndarray):
+        pose = np.array(pose, dtype=np.float32)
+        self._state.tcp_pose = pose.copy()
+        return True
+
+    def servo_arm(
+        self,
+        pose: np.ndarray,
+        duration: float = 3.0,
+        velocity: float | None = None,
+        acceleration: float | None = None,
+    ):
         pose = np.array(pose, dtype=np.float32)
         self._state.tcp_pose = pose.copy()
         return True
