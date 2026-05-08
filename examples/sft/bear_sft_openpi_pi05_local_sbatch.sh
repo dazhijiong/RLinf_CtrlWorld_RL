@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-#SBATCH -J rlinf_pi05_book_sft
+#SBATCH -J rlinf_pi05_bear_sft
 #SBATCH -A naiss2025-22-1173
-#SBATCH --output=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/pi05_book_sft_out_%j.txt
-#SBATCH --error=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/pi05_book_sft_err_%j.txt
+#SBATCH --output=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/pi05_bear_sft_out_%j.txt
+#SBATCH --error=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/pi05_bear_sft_err_%j.txt
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=A100:4
+#SBATCH --gpus-per-node=A100fat:2
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
-#SBATCH --time=5:00:00
+#SBATCH --time=08:00:00
 #SBATCH -p alvis
 
 set -euo pipefail
@@ -59,10 +59,10 @@ export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 
-CONFIG_NAME="${CONFIG_NAME:-book_sft_openpi_pi05_local}"
-EXPERIMENT_NAME="${EXPERIMENT_NAME:-book_sft_openpi_pi05_local_book_new_success}"
+CONFIG_NAME="${CONFIG_NAME:-bear_sft_openpi_pi05_local}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-bear_sft_openpi_pi05_local_joint}"
 MODEL_PATH="${MODEL_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_base_rlinf}"
-DATA_PATH="${DATA_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/datasets/book_new_success/lerobot_gello_with_images_filtered}"
+DATA_PATH="${DATA_PATH:-/mimer/NOBACKUP/groups/naiss2024-5-164/CN/package_bear_j}"
 LR="${LR:-1.0e-5}"
 RESUME_DIR="${RESUME_DIR:-}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-}"

@@ -3,8 +3,8 @@
 #SBATCH -A naiss2025-22-1173
 #SBATCH --output=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/ctrl_world_pi05_eval_libero3d_out_%j.txt
 #SBATCH --error=/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/ctrl_world_pi05_eval_libero3d_err_%j.txt
-#SBATCH --nodes=2
-#SBATCH --gpus-per-node=A100:4
+#SBATCH --nodes=1
+#SBATCH --gpus-per-node=A100fat:1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=12
 #SBATCH --time=00:20:00

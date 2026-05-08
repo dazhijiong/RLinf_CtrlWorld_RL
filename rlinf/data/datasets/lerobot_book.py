@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Helpers for the local LeRobot-format book dataset."""
+"""Helpers for local LeRobot-format video datasets."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ import numpy as np
 import pyarrow.parquet as pq
 import torch
 import torchvision.transforms as transforms
+import torchvision
 from PIL import Image
 from torch.utils.data import Dataset
 
@@ -37,6 +38,7 @@ BOOK_IMAGE_KEYS = (
     BOOK_EXTRA_VIEW_IMAGE_KEY,
     BOOK_WRIST_IMAGE_KEY,
 )
+VIDEO_TOLERANCE_S = 1e-4
 
 
 def resolve_lerobot_dataset_root(repo_id: str) -> Path:
@@ -88,6 +90,131 @@ def load_book_image_frame(
         return np.array(image.convert("RGB"), dtype=np.uint8, copy=True)
 
 
+def load_lerobot_video_frame(
+    root: Path,
+    episode: dict[str, Any],
+    image_key: str,
+    timestamp: float,
+    video_path_template: str,
+    tolerance_s: float = VIDEO_TOLERANCE_S,
+    video_backend: str = "pyav",
+) -> np.ndarray:
+    chunk_idx_key = f"videos/{image_key}/chunk_index"
+    file_idx_key = f"videos/{image_key}/file_index"
+    from_ts_key = f"videos/{image_key}/from_timestamp"
+    if chunk_idx_key not in episode or file_idx_key not in episode:
+        raise FileNotFoundError(
+            f"No image files or video metadata for {image_key} in dataset {root}"
+        )
+
+    video_path = root / video_path_template.format(
+        video_key=image_key,
+        chunk_index=int(episode[chunk_idx_key]),
+        file_index=int(episode[file_idx_key]),
+    )
+    if not video_path.is_file():
+        raise FileNotFoundError(f"Missing video for {image_key}: {video_path}")
+
+    # Same timestamp convention as CN/lerobot's DatasetReader._query_videos:
+    # query the frame at episode video start + current row timestamp.
+    query_timestamp = float(episode.get(from_ts_key, 0.0)) + timestamp
+    frame = decode_video_frames(
+        video_path,
+        [query_timestamp],
+        tolerance_s=tolerance_s,
+        backend=video_backend,
+        return_uint8=True,
+    ).squeeze(0)
+    return frame.numpy()
+
+
+def decode_video_frames(
+    video_path: Path | str,
+    timestamps: list[float],
+    tolerance_s: float,
+    backend: str = "pyav",
+    return_uint8: bool = False,
+) -> torch.Tensor:
+    """Decode video frames following CN/lerobot's video_utils.decode_video_frames."""
+    video_path = str(video_path)
+    keyframes_only = False
+    torchvision.set_video_backend(backend)
+    if backend == "pyav":
+        keyframes_only = True
+
+    reader = torchvision.io.VideoReader(video_path, "video")
+    first_ts = min(timestamps)
+    last_ts = max(timestamps)
+    reader.seek(first_ts, keyframes_only=keyframes_only)
+
+    loaded_frames = []
+    loaded_ts = []
+    for frame in reader:
+        current_ts = frame["pts"]
+        loaded_frames.append(frame["data"])
+        loaded_ts.append(current_ts)
+        if current_ts >= last_ts:
+            break
+
+    if backend == "pyav":
+        reader.container.close()
+
+    query_ts = torch.tensor(timestamps)
+    loaded_ts = torch.tensor(loaded_ts)
+    dist = torch.cdist(query_ts[:, None], loaded_ts[:, None], p=1)
+    min_, argmin_ = dist.min(1)
+
+    is_within_tol = min_ < tolerance_s
+    if not is_within_tol.all():
+        raise RuntimeError(
+            f"One or several query timestamps unexpectedly violate the tolerance "
+            f"({min_[~is_within_tol]} > tolerance_s={tolerance_s}). "
+            f"\nqueried timestamps: {query_ts}"
+            f"\nloaded timestamps: {loaded_ts}"
+            f"\nvideo: {video_path}"
+            f"\nbackend: {backend}"
+        )
+
+    closest_frames = torch.stack([loaded_frames[idx] for idx in argmin_])
+    if len(timestamps) != len(closest_frames):
+        raise RuntimeError(
+            f"Number of retrieved frames ({len(closest_frames)}) does not match "
+            f"number of queried timestamps ({len(timestamps)})"
+        )
+
+    if return_uint8:
+        return closest_frames
+    return closest_frames.type(torch.float32) / 255
+
+
+def load_lerobot_image_or_video_frame(
+    root: Path,
+    episode: dict[str, Any],
+    image_key: str,
+    frame_index: int,
+    timestamp: float,
+    video_path_template: str,
+) -> np.ndarray:
+    episode_index = int(episode["episode_index"])
+    image_path = (
+        root
+        / "images"
+        / image_key
+        / f"episode-{episode_index:06d}"
+        / f"frame-{frame_index:06d}.png"
+    )
+    if image_path.is_file():
+        with Image.open(image_path) as image:
+            return np.array(image.convert("RGB"), dtype=np.uint8, copy=True)
+    return load_lerobot_video_frame(
+        root,
+        episode,
+        image_key,
+        timestamp,
+        video_path_template,
+    )
+
+
 @dataclass(frozen=True)
 class LeRobotBookDatasetMetadata:
     repo_id: str
@@ -103,7 +230,7 @@ class LeRobotBookDatasetMetadata:
 
 
 class LeRobotBookDataset:
-    """Random-access dataset for OpenPI SFT on the local book dataset."""
+    """Random-access dataset for OpenPI SFT on local LeRobot datasets."""
 
     def __init__(
         self,
@@ -111,6 +238,7 @@ class LeRobotBookDataset:
         *,
         delta_timestamps: dict[str, list[float]] | None = None,
         frame_stride: int = 1,
+        camera_keys: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         self.repo_id = repo_id
         self.root = resolve_lerobot_dataset_root(repo_id)
@@ -119,15 +247,25 @@ class LeRobotBookDataset:
         self.frame_stride = max(1, int(frame_stride))
         self.info = self.meta.info
 
-        self.image_keys = [
+        available_image_keys = [
             key
             for key, feature in self.info["features"].items()
-            if key.startswith("observation.images.") and feature.get("dtype") == "video"
+            if key.startswith("observation.images.")
+            and feature.get("dtype") in {"image", "video"}
         ]
-        if set(self.image_keys) != set(BOOK_IMAGE_KEYS):
-            raise ValueError(
-                f"Expected book image keys {BOOK_IMAGE_KEYS}, got {self.image_keys}"
-            )
+        if camera_keys is None:
+            self.image_keys = list(available_image_keys)
+        else:
+            self.image_keys = list(camera_keys)
+            missing_keys = [
+                image_key
+                for image_key in self.image_keys
+                if image_key not in available_image_keys
+            ]
+            if missing_keys:
+                raise ValueError(
+                    f"Requested camera_keys {missing_keys} are not available in dataset {self.root}"
+                )
 
         action_key = next(iter(self.delta_timestamps), "action")
         action_offsets = self.delta_timestamps.get(action_key, [0.0])
@@ -171,6 +309,7 @@ class LeRobotBookDataset:
                 "task_index",
                 "episode_index",
                 "frame_index",
+                "timestamp",
             ],
             filters=[("episode_index", "=", episode_index)],
         )
@@ -198,9 +337,18 @@ class LeRobotBookDataset:
             ),
             "task_index": np.asarray(row["task_index"], dtype=np.int64),
         }
+        episode = self.episodes[episode_index]
         for image_key in self.image_keys:
-            sample[image_key] = load_book_image_frame(
-                self.root, episode_index, image_key, row_frame_index
+            sample[image_key] = load_lerobot_image_or_video_frame(
+                self.root,
+                episode,
+                image_key,
+                row_frame_index,
+                float(row["timestamp"]),
+                self.info.get(
+                    "video_path",
+                    "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
+                ),
             )
         return sample
 

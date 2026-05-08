@@ -20,17 +20,17 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "book_sft_openpi_pi05_local_book_new_success"
+    experiment_name: "bear_sft_openpi_pi05_local_joint"
     logger_backends: ["tensorboard"]
 
   max_epochs: 20000
   max_steps: -1
   val_check_interval: -1
   save_interval: 200
-  resume_dir: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/20260501-113914-book_sft_openpi_pi05_local-job6554353/book_sft_openpi_pi05_local_book_new_success/checkpoints/global_step_1400"
+  resume_dir: null
 
 data:
-  train_data_paths: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/datasets/book_new_success/lerobot_gello_with_images_filtered"
+  train_data_paths: "/mimer/NOBACKUP/groups/naiss2024-5-164/CN/package_bear_j"
 
 algorithm:
   adv_type: gae
@@ -38,11 +38,11 @@ algorithm:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 16
+  micro_batch_size: 64
   global_batch_size: 128
   seed: 0
   openpi_data:
-    frame_stride: 2
+    frame_stride: 1
     camera_keys:
       - "observation.images.d405_1_rgb"
       - "observation.images.d435_rgb"
@@ -51,11 +51,12 @@ actor:
     precision: null
     model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_base_rlinf"
     num_action_chunks: 10
+    action_dim: 7
     add_value_head: False
     is_lora: False
     lora_rank: 16
     openpi:
-      config_name: "pi05_book"
+      config_name: "pi05_bear"
       num_images_in_input: 2
       add_libero_prompt_prefix: False
       train_expert_only: True

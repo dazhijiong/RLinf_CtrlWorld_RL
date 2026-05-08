@@ -42,7 +42,7 @@ class FSDPVlaSftWorker(FSDPSftWorker):
                 batch_size=self.cfg.actor.micro_batch_size * self._world_size,
                 data_kwargs=getattr(self.cfg.actor, "openpi_data", None),
             )
-            if self.cfg.actor.model.openpi.config_name == "pi05_book":
+            if self.cfg.actor.model.openpi.config_name in ["pi05_book", "pi05_bear"]:
                 data_loader = create_book_data_loader(
                     config, framework="pytorch", shuffle=True
                 )

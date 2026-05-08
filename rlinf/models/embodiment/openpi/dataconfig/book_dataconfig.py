@@ -28,22 +28,37 @@ class LeRobotBookDataConfig(DataConfigFactory):
     default_prompt: str | None = None
     extra_delta_transform: bool = True
     frame_stride: int = 1
+    camera_keys: tuple[str, ...] = (
+        "observation.images.d405_rgb",
+        "observation.images.d435_rgb",
+        "observation.images.d405_1_rgb",
+    )
 
     @override
     def create(
         self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig
     ) -> DataConfig:
+        camera_keys = tuple(self.camera_keys)
+        if not 1 <= len(camera_keys) <= 3:
+            raise ValueError(
+                f"Expected 1 to 3 camera_keys for book data, got {camera_keys}"
+            )
+
+        repack_mapping = {
+            "observation/image": camera_keys[0],
+            "observation/state": "observation.state",
+            "actions": "action",
+            "prompt": "prompt",
+        }
+        if len(camera_keys) >= 2:
+            repack_mapping["observation/wrist_image"] = camera_keys[1]
+        if len(camera_keys) >= 3:
+            repack_mapping["observation/extra_view_image"] = camera_keys[2]
+
         repack_transform = _transforms.Group(
             inputs=[
                 _transforms.RepackTransform(
-                    {
-                        "observation/image": "observation.images.d405_rgb",
-                        "observation/wrist_image": "observation.images.d435_rgb",
-                        "observation/extra_view_image": "observation.images.d405_1_rgb",
-                        "observation/state": "observation.state",
-                        "actions": "action",
-                        "prompt": "prompt",
-                    }
+                    repack_mapping
                 )
             ]
         )

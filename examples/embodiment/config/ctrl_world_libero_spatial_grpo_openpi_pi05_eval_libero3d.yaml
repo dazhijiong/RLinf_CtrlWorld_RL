@@ -13,7 +13,7 @@ hydra:
     - file://${oc.env:EMBODIED_PATH}/config/
 
 cluster:
-  num_nodes: 2
+  num_nodes: 1
   component_placement:
     actor, env, rollout: all
 
@@ -121,7 +121,7 @@ rollout:
   pipeline_stage_num: 1
 
   model:
-    model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/20260406-095057-ctrl_world_libero_spatial_success_fm_openpi_pi05-job6340462/ctrl_world_libero_spatial_success_fm_openpi_pi05/checkpoints/global_step_4"
+    model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/20260503-181023-ctrl_world_libero_spatial_grpo_openpi_pi05-job6562060/ctrl_world_libero_spatial_grpo_openpi_pi05/checkpoints/global_step_6"
     precision: ${actor.model.precision}
 
 actor:
@@ -133,7 +133,7 @@ actor:
   enable_offload: False
 
   model:
-    model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/20260406-095057-ctrl_world_libero_spatial_success_fm_openpi_pi05-job6340462/ctrl_world_libero_spatial_success_fm_openpi_pi05/checkpoints/global_step_4"
+    model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/20260428-204324-ctrl_world_libero_spatial_grpo_openpi_pi05_action_suffix-job6525451/ctrl_world_libero_spatial_grpo_openpi_pi05_action_suffix_dynamic_gamma/checkpoints/global_step_3"
     model_type: "openpi"
     num_action_chunks: ${env.train.ctrl_world_cfg.chunk}
     num_steps: 3
@@ -142,6 +142,7 @@ actor:
       config_name: "pi05_libero"
       num_images_in_input: 2
       add_libero_prompt_prefix: False
+      norm_stats_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_libero_sft_train20_step2000_local/physical-intelligence/libero/norm_stats.json"
 
   optim:
     lr: 5.0e-6

@@ -6,7 +6,7 @@ paths:
   ctrl_world_ckpt_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World/model_ckpt/ctrl_world_book_from_lerobot_base_20260404/checkpoint-15000.pt"
   initial_image_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/lerobot_book"
   reward_model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/reward_model/outputs/open_book_resnet_rm_ep0_15_boundary_v2_strong_aug/resnet_rm.pth"
-  policy_model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_book_sft_filtered_step600_local"
+  policy_model_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/models/pi05_base_rlinf"
 
 training:
   max_epochs: 1000

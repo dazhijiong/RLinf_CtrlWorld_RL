@@ -26,6 +26,7 @@ def create_book_data_loader(
 
     dataset_meta = LeRobotBookDatasetMetadata(data_config.repo_id)
     frame_stride = max(1, int(getattr(config.data, "frame_stride", 1)))
+    camera_keys = getattr(config.data, "camera_keys", None)
     dataset = LeRobotBookDataset(
         data_config.repo_id,
         delta_timestamps={
@@ -36,6 +37,7 @@ def create_book_data_loader(
             for key in data_config.action_sequence_keys
         },
         frame_stride=frame_stride,
+        camera_keys=camera_keys,
     )
 
     if data_config.prompt_from_task:

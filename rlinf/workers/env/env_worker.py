@@ -525,6 +525,7 @@ class EnvWorker(Worker):
                     self.eval_env_list[i], RecordVideo
                 ):
                     self.eval_env_list[i].flush_video()
+                    self.eval_env_list[i].wait_for_pending_saves()
                 if not self.cfg.env.eval.auto_reset:
                     self.eval_env_list[i].update_reset_state_ids()
 

@@ -830,8 +830,16 @@ class RecordVideo(gym.Wrapper):
         """Remove finished futures to avoid unbounded growth."""
         self._save_futures = [f for f in self._save_futures if not f.done()]
 
+    def wait_for_pending_saves(self) -> None:
+        """Block until all queued video/image/tensor writes are fully flushed."""
+        pending_futures = list(self._save_futures)
+        for future in pending_futures:
+            future.result()
+        self._prune_futures()
+
     def close(self):
         """Wait for pending video writes before closing."""
+        self.wait_for_pending_saves()
         self._executor.shutdown(wait=True)
         self._save_futures = []
         return super().close()

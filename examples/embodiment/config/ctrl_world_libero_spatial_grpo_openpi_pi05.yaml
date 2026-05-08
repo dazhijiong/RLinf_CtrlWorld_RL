@@ -33,7 +33,7 @@ runner:
   val_check_interval: -1
   save_interval: 1
 
-  resume_dir: null
+  resume_dir: /mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/20260502-225009-ctrl_world_libero_spatial_grpo_openpi_pi05-job6559829/ctrl_world_libero_spatial_grpo_openpi_pi05/checkpoints/global_step_4
   ckpt_path: null
 
 algorithm:

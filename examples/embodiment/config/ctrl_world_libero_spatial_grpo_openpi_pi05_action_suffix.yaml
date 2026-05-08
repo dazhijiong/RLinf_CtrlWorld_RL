@@ -33,7 +33,7 @@ runner:
   val_check_interval: -1
   save_interval: 1
 
-  resume_dir: null
+  resume_dir: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/20260428-204324-ctrl_world_libero_spatial_grpo_openpi_pi05_action_suffix-job6525451/ctrl_world_libero_spatial_grpo_openpi_pi05_action_suffix_dynamic_gamma/checkpoints/global_step_5"
   ckpt_path: null
 
 algorithm:
@@ -85,7 +85,7 @@ env:
   group_name: "EnvGroup"
 
   train:
-    total_num_envs: 96
+    total_num_envs: 64
     group_size: ${algorithm.group_size}
     ctrl_world_ckpt_path: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/Ctrl-World/model_ckpt/doird_subset/checkpoint-10000.pt"
     max_episode_steps: 240
@@ -98,8 +98,9 @@ env:
     dynamic_gamma_delta_weight: 0.01
     dynamic_gamma_gap_weight: 0.02
     video_cfg:
-      save_video: False
+      save_video: True
       fps: 7
+      save_success_frame: True
     ctrl_world_cfg:
       num_inference_steps: 50
       decode_chunk_size: 12
@@ -129,6 +130,7 @@ env:
       save_video: True
       fps: 7
       video_base_dir: ${runner.logger.log_path}/video/eval
+      save_success_frame: True
     ctrl_world_cfg:
       policy_action_type: delta_eef
       policy_gripper_type: passthrough
