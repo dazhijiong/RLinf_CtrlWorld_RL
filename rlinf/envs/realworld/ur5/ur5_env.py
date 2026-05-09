@@ -25,7 +25,6 @@ from scipy.spatial.transform import Rotation as R, Slerp
 
 from rlinf.envs.realworld.common.camera import Camera, CameraInfo
 from rlinf.envs.realworld.common.video_player import VideoPlayer
-from rlinf.envs.realworld.franka.utils import clip_euler_to_target_window
 from rlinf.scheduler import UR5HWInfo, WorkerInfo
 from rlinf.utils.logging import get_logger
 
@@ -48,7 +47,7 @@ class UR5RobotConfig:
     tcp_offset: Optional[list[float]] = None
     move_acc: float = 0.25
     move_vel: float = 0.25
-    pose_orientation_type: str = "euler"
+    control_mode: str = "joint"
     use_servo: bool = True
     servo_time: Optional[float] = None
     servo_lookahead_time: float = 0.1
@@ -56,9 +55,6 @@ class UR5RobotConfig:
     reset_servo_duration: float = 3.0
     reset_servo_vel: float = 0.03
     reset_servo_acc: float = 0.05
-    enable_action_delta_limit: bool = True
-    max_action_pos_delta: float = 0.001
-    max_action_rot_delta: float = 0.005
 
     is_dummy: bool = False
     use_dense_reward: bool = False
@@ -82,8 +78,6 @@ class UR5RobotConfig:
     random_xy_range: float = 0.0
     random_rz_range: float = 0.0
 
-    ee_pose_limit_min: np.ndarray = field(default_factory=lambda: np.zeros(6))
-    ee_pose_limit_max: np.ndarray = field(default_factory=lambda: np.zeros(6))
     compliance_param: dict[str, float] = field(default_factory=dict)
     precision_param: dict[str, float] = field(default_factory=dict)
     binary_gripper_threshold: float = 0.5
@@ -105,6 +99,12 @@ class UR5Env(gym.Env):
     ):
         self._logger = get_logger()
         self.config = config
+        self.config.control_mode = self.config.control_mode.lower()
+        if self.config.control_mode not in {"joint", "pose"}:
+            raise ValueError(
+                f"Unsupported UR5 control_mode: {self.config.control_mode}. "
+                "Expected 'joint' or 'pose'."
+            )
         self.hardware_info = hardware_info
         self.env_idx = env_idx
         self.node_rank = 0
@@ -186,16 +186,11 @@ class UR5Env(gym.Env):
 
     def _to_rtde_pose(self, pose: np.ndarray) -> np.ndarray:
         pose = np.asarray(pose, dtype=np.float64)
-        if self.config.pose_orientation_type == "rotvec":
-            return pose.copy()
-        if self.config.pose_orientation_type == "euler":
-            return np.concatenate(
-                [pose[:3], R.from_euler("xyz", pose[3:].copy()).as_rotvec()]
+        if pose.shape != (6,):
+            raise ValueError(
+                f"UR5 poses must be shape (6,) as [x, y, z, rx, ry, rz], got {pose.shape}."
             )
-        raise ValueError(
-            f"Unsupported pose_orientation_type: {self.config.pose_orientation_type}. "
-            "Expected 'euler' or 'rotvec'."
-        )
+        return pose.copy()
 
     def step(self, action: np.ndarray):
         start_time = time.time()
@@ -203,14 +198,16 @@ class UR5Env(gym.Env):
         action = np.asarray(action, dtype=np.float32)
         action = np.clip(action, self.action_space.low, self.action_space.high)
 
-        self.next_position = action[:6].copy()
+        target = action[:6].copy()
 
         if not self.config.is_dummy:
             self._ur5_state = self._controller.get_state().wait()[0]
-            self.next_position = self._limit_action_delta(self.next_position)
             gripper_action = float(action[6])
             is_gripper_action_effective = self._gripper_action(gripper_action)
-            self._move_action(self._clip_position_to_safety_box(self.next_position))
+            if self.config.control_mode == "joint":
+                self._move_joint_action(target)
+            else:
+                self._move_pose_action(target)
         else:
             is_gripper_action_effective = True
 
@@ -228,33 +225,6 @@ class UR5Env(gym.Env):
         )
         truncated = self._num_steps >= self.config.max_num_steps
         return observation, reward, terminated, truncated, {}
-
-    def _limit_action_delta(self, target_pose: np.ndarray) -> np.ndarray:
-        if not self.config.enable_action_delta_limit:
-            return target_pose
-
-        current_pose = np.asarray(self._ur5_state.tcp_pose, dtype=np.float64)
-        target_pose = np.asarray(target_pose, dtype=np.float64).copy()
-
-        pos_delta = target_pose[:3] - current_pose[:3]
-        pos_delta_norm = np.linalg.norm(pos_delta)
-        if pos_delta_norm > self.config.max_action_pos_delta > 0:
-            target_pose[:3] = current_pose[:3] + (
-                pos_delta / pos_delta_norm * self.config.max_action_pos_delta
-            )
-
-        current_rot = R.from_rotvec(current_pose[3:])
-        target_rot = R.from_rotvec(target_pose[3:])
-        rel_rot = target_rot * current_rot.inv()
-        rot_delta = rel_rot.as_rotvec()
-        rot_delta_norm = np.linalg.norm(rot_delta)
-        if rot_delta_norm > self.config.max_action_rot_delta > 0:
-            limited_rot = R.from_rotvec(
-                rot_delta / rot_delta_norm * self.config.max_action_rot_delta
-            )
-            target_pose[3:] = (limited_rot * current_rot).as_rotvec()
-
-        return target_pose.astype(np.float32)
 
     @property
     def num_steps(self):
@@ -301,6 +271,11 @@ class UR5Env(gym.Env):
         self._ur5_state = self._controller.get_state().wait()[0]
         return self._get_observation(), {}
 
+    def get_current_obs(self):
+        if not self.config.is_dummy:
+            self._ur5_state = self._controller.get_state().wait()[0]
+        return self._get_observation(), {}
+
     def go_to_rest(self, joint_reset=False):
         if joint_reset:
             self._controller.reset_joint(self.config.joint_reset_qpos).wait()
@@ -311,13 +286,7 @@ class UR5Env(gym.Env):
             reset_pose[:2] += np.random.uniform(
                 -self.config.random_xy_range, self.config.random_xy_range, (2,)
             )
-            if self.config.pose_orientation_type == "euler":
-                euler_random = self.config.target_ee_pose[3:].copy()
-                euler_random[-1] += np.random.uniform(
-                    -self.config.random_rz_range, self.config.random_rz_range
-                )
-                reset_pose[3:] = R.from_euler("xyz", euler_random).as_rotvec()
-            elif self.config.random_rz_range != 0:
+            if self.config.random_rz_range != 0:
                 self._logger.warning(
                     "Ignoring random_rz_range for rotvec reset pose orientation."
                 )
@@ -364,24 +333,6 @@ class UR5Env(gym.Env):
         )
 
     def _init_action_obs_spaces(self):
-        self._has_xyz_safe_limits = bool(
-            np.any(self.config.ee_pose_limit_min[:3] != 0)
-            or np.any(self.config.ee_pose_limit_max[:3] != 0)
-        )
-        self._has_rpy_safe_limits = bool(
-            np.any(self.config.ee_pose_limit_min[3:] != 0)
-            or np.any(self.config.ee_pose_limit_max[3:] != 0)
-        )
-        self._xyz_safe_space = gym.spaces.Box(
-            low=self.config.ee_pose_limit_min[:3],
-            high=self.config.ee_pose_limit_max[:3],
-            dtype=np.float64,
-        )
-        self._rpy_safe_space = gym.spaces.Box(
-            low=self.config.ee_pose_limit_min[3:],
-            high=self.config.ee_pose_limit_max[3:],
-            dtype=np.float64,
-        )
         self.action_space = gym.spaces.Box(
             low=np.array([-np.inf] * 6 + [0.0], dtype=np.float32),
             high=np.array([np.inf] * 6 + [1.0], dtype=np.float32),
@@ -394,6 +345,12 @@ class UR5Env(gym.Env):
                     {
                         "tcp_pose": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
                         "tcp_vel": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
+                        "joint_position": gym.spaces.Box(
+                            -np.inf, np.inf, shape=(6,)
+                        ),
+                        "joint_velocity": gym.spaces.Box(
+                            -np.inf, np.inf, shape=(6,)
+                        ),
                         "gripper_position": gym.spaces.Box(0, 1, shape=(1,)),
                         "tcp_force": gym.spaces.Box(-np.inf, np.inf, shape=(3,)),
                         "tcp_torque": gym.spaces.Box(-np.inf, np.inf, shape=(3,)),
@@ -462,22 +419,6 @@ class UR5Env(gym.Env):
         self.camera_player.put_frame(display_frames)
         return frames
 
-    def _clip_position_to_safety_box(self, position: np.ndarray) -> np.ndarray:
-        if self._has_xyz_safe_limits:
-            position[:3] = np.clip(
-                position[:3], self._xyz_safe_space.low, self._xyz_safe_space.high
-            )
-        if self._has_rpy_safe_limits:
-            euler = R.from_rotvec(position[3:].copy()).as_euler("xyz")
-            euler = clip_euler_to_target_window(
-                euler=euler,
-                target_euler=self.config.target_ee_pose[3:],
-                lower_euler=self._rpy_safe_space.low,
-                upper_euler=self._rpy_safe_space.high,
-            )
-            position[3:] = R.from_euler("xyz", euler).as_rotvec()
-        return position
-
     def _clear_error(self):
         self._controller.clear_errors().wait()
 
@@ -500,24 +441,13 @@ class UR5Env(gym.Env):
             return True
         return False
 
-    def _interpolate_move(self, pose: np.ndarray, timeout: float = 1.0):
-        num_steps = int(timeout * self.config.step_frequency)
-        self._ur5_state = self._controller.get_state().wait()[0]
-        pos_path = np.linspace(self._ur5_state.tcp_pose[:3], pose[:3], num_steps + 1)
-        key_rots = R.from_rotvec(
-            np.stack([self._ur5_state.tcp_pose[3:], pose[3:]], axis=0)
-        )
-        slerp = Slerp([0.0, 1.0], key_rots)
-        rotvec_path = slerp(np.linspace(0.0, 1.0, num_steps + 1)).as_rotvec()
-        for pos, rotvec in zip(pos_path[1:], rotvec_path[1:]):
-            interpolated_pose = np.concatenate([pos, rotvec])
-            self._move_action(interpolated_pose.astype(np.float32))
-            time.sleep(1.0 / self.config.step_frequency)
-        self._ur5_state = self._controller.get_state().wait()[0]
-
-    def _move_action(self, position: np.ndarray):
+    def _move_joint_action(self, joint_position: np.ndarray):
         self._clear_error()
-        self._controller.move_arm(position.astype(np.float32)).wait()
+        self._controller.reset_joint(joint_position.astype(np.float32)).wait()
+
+    def _move_pose_action(self, pose: np.ndarray):
+        self._clear_error()
+        self._controller.move_arm(self._to_rtde_pose(pose).astype(np.float32)).wait()
 
     def _get_observation(self) -> dict:
         if self.config.is_dummy:
@@ -527,6 +457,8 @@ class UR5Env(gym.Env):
         state = {
             "tcp_pose": self._ur5_state.tcp_pose,
             "tcp_vel": self._ur5_state.tcp_vel,
+            "joint_position": self._ur5_state.arm_joint_position,
+            "joint_velocity": self._ur5_state.arm_joint_velocity,
             "gripper_position": np.array([self._ur5_state.gripper_position]),
             "tcp_force": self._ur5_state.tcp_force,
             "tcp_torque": self._ur5_state.tcp_torque,

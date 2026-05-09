@@ -852,7 +852,9 @@ class EnvWorker(Worker):
             if not self.cfg.env.eval.auto_reset or eval_rollout_epoch == 0:
                 for stage_id in range(self.stage_num):
                     self.eval_env_list[stage_id].is_start = True
-                    extracted_obs, infos = self.eval_env_list[stage_id].reset()
+                    extracted_obs, infos = self.eval_env_list[
+                        stage_id
+                    ].get_current_obs()
                     env_output = EnvOutput(
                         obs=extracted_obs,
                         final_obs=infos["final_observation"]

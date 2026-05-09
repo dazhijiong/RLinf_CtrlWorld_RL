@@ -116,13 +116,10 @@ env:
       tcp_offset: null
       move_acc: 0.005
       move_vel: 0.003
+      control_mode: "joint"
       servo_lookahead_time: 0.2
       servo_gain: 100
-      enable_action_delta_limit: True
-      max_action_pos_delta: 0.001
-      max_action_rot_delta: 0.005
       enable_camera_player: False
-      pose_orientation_type: "rotvec"
       use_servo: True
       target_ee_pose: [0, 0, 0, 0, 0, 0]
       enable_random_reset: False
@@ -150,13 +147,10 @@ env:
       tcp_offset: null
       move_acc: 0.005
       move_vel: 0.003
+      control_mode: "joint"
       servo_lookahead_time: 0.2
       servo_gain: 100
-      enable_action_delta_limit: True
-      max_action_pos_delta: 0.001
-      max_action_rot_delta: 0.005
       enable_camera_player: False
-      pose_orientation_type: "rotvec"
       use_servo: True
       target_ee_pose: [-0.48572, -0.11182, 0.43350, 2.224, 2.238, 0.012]
       reset_ee_pose: [-0.48572, -0.11182, 0.43350, 2.224, 2.238, 0.012]

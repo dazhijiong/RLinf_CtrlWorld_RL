@@ -34,11 +34,6 @@ class UR5ReachConfig(UR5RobotConfig):
     )
     random_xy_range: float = 0.02
     random_rz_range: float = np.pi / 12
-    clip_x_range: float = 0.05
-    clip_y_range: float = 0.05
-    clip_z_range_low: float = 0.02
-    clip_z_range_high: float = 0.08
-    clip_rz_range: float = np.pi / 6
     enable_random_reset: bool = True
     enable_gripper_penalty: bool = False
 
@@ -50,26 +45,6 @@ class UR5ReachConfig(UR5RobotConfig):
         else:
             self.reset_ee_pose = np.array(self.reset_ee_pose)
         self.action_scale = np.array([0.02, 0.1, 1.0])
-        self.ee_pose_limit_min = np.array(
-            [
-                self.target_ee_pose[0] - self.clip_x_range,
-                self.target_ee_pose[1] - self.clip_y_range,
-                self.target_ee_pose[2] - self.clip_z_range_low,
-                self.target_ee_pose[3] - 0.01,
-                self.target_ee_pose[4] - 0.01,
-                self.target_ee_pose[5] - self.clip_rz_range,
-            ]
-        )
-        self.ee_pose_limit_max = np.array(
-            [
-                self.target_ee_pose[0] + self.clip_x_range,
-                self.target_ee_pose[1] + self.clip_y_range,
-                self.target_ee_pose[2] + self.clip_z_range_high,
-                self.target_ee_pose[3] + 0.01,
-                self.target_ee_pose[4] + 0.01,
-                self.target_ee_pose[5] + self.clip_rz_range,
-            ]
-        )
 
 
 class UR5ReachEnv(UR5Env):

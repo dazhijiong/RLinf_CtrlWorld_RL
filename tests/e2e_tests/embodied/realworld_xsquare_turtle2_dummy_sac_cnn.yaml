@@ -134,7 +134,7 @@ actor:
 
   model:
     model_path: "/workspace/dataset/resnet"
-    state_dim: 6  # For single arm: 6 (xyz + euler after Quat2EulerWrapper); for dual arms: 12
+    state_dim: 6  # For single arm: 6 (xyz + rotation); for dual arms: 12
     action_dim: 6  # For single arm: 6 (xyz_delta + rpy_delta); for dual arms: 12
 
   optim:

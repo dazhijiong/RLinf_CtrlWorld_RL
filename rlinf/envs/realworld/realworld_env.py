@@ -30,8 +30,6 @@ from rlinf.envs.realworld.common.wrappers import (
     GripperCloseEnv,
     KeyboardRewardDoneMultiStageWrapper,
     KeyboardRewardDoneWrapper,
-    Quat2EulerWrapper,
-    RelativeFrame,
     SpacemouseIntervention,
 )
 from rlinf.envs.realworld.venv import NoAutoResetSyncVectorEnv
@@ -93,8 +91,6 @@ class RealWorldEnv(gym.Env):
             elif self.cfg.keyboard_reward_wrapper == "single_stage":
                 env = KeyboardRewardDoneWrapper(env)
 
-        env = RelativeFrame(env)
-        env = Quat2EulerWrapper(env)
         return env
 
     @staticmethod
@@ -128,6 +124,10 @@ class RealWorldEnv(gym.Env):
         ]
         self.env = NoAutoResetSyncVectorEnv(env_fns)
         self.task_descriptions = list(self.env.call("task_description"))
+        self.control_modes = [
+            getattr(getattr(env.unwrapped, "config", None), "control_mode", "joint")
+            for env in self.env.envs
+        ]
 
     @property
     def total_num_group_envs(self):
@@ -204,6 +204,21 @@ class RealWorldEnv(gym.Env):
             self._reset_metrics()
         return extracted_obs, infos
 
+    def get_current_obs(self):
+        assert self.num_envs == 1, (
+            "get_current_obs currently supports one realworld env."
+        )
+        raw_obs, infos = self.env.envs[0].get_current_obs()
+        batched_obs = self._batch_single_obs(raw_obs)
+        extracted_obs = self._wrap_obs(batched_obs)
+        self._reset_metrics()
+        return extracted_obs, infos
+
+    def _batch_single_obs(self, obs):
+        if isinstance(obs, dict):
+            return {key: self._batch_single_obs(value) for key, value in obs.items()}
+        return np.expand_dims(obs, axis=0)
+
     def _wrap_obs(self, raw_obs):
         """
         raw_obs: Dict of list
@@ -211,11 +226,31 @@ class RealWorldEnv(gym.Env):
         obs = {}
 
         # Process states
-        full_states = []
         raw_states = OrderedDict(sorted(raw_obs["state"].items()))
-        for value in raw_states.values():
-            full_states.append(value)
-        full_states = np.concatenate(full_states, axis=-1)
+        control_mode = self.control_modes[0]
+        if (
+            control_mode == "joint"
+            and "joint_position" in raw_states
+            and "gripper_position" in raw_states
+        ):
+            full_states = np.concatenate(
+                [raw_states["joint_position"], raw_states["gripper_position"]],
+                axis=-1,
+            )
+        elif (
+            control_mode == "pose"
+            and "tcp_pose" in raw_states
+            and "gripper_position" in raw_states
+        ):
+            full_states = np.concatenate(
+                [raw_states["tcp_pose"], raw_states["gripper_position"]],
+                axis=-1,
+            )
+        else:
+            full_states = []
+            for value in raw_states.values():
+                full_states.append(value)
+            full_states = np.concatenate(full_states, axis=-1)
         obs["states"] = full_states
 
         # Process images

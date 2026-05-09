@@ -642,6 +642,13 @@ class RecordVideo(gym.Wrapper):
         self.add_new_frames(obs, info)
         return obs, info
 
+    def get_current_obs(self):
+        """Read and record the current observation without resetting the env."""
+        obs, info = self.env.get_current_obs()
+        self._success_once_state[:] = False
+        self.add_new_frames(obs, info)
+        return obs, info
+
     def step(self, action):
         """Step env and record the resulting frame."""
         obs, reward, terminated, truncated, info = self.env.step(action)
