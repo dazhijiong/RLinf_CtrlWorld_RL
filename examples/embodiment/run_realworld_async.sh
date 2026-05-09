@@ -13,12 +13,22 @@ if [ -f "${REPO_PATH}/.venv_pi05_ur5/bin/activate" ]; then
     source "${REPO_PATH}/.venv_pi05_ur5/bin/activate"
 fi
 
-CONFIG_NAME="realworld_ur5_openpi_pi05_eval"
+CONFIG_NAME="${CONFIG_NAME:-${1:-realworld_ur5_open_book_openpi_pi05_eval}}"
+if [ "$#" -gt 0 ]; then
+    shift
+fi
 
 echo "Using Python at $(which python)"
 LOG_DIR="${REPO_PATH}/logs/$(date +'%Y%m%d-%H:%M:%S')-${CONFIG_NAME}" #/$(date +'%Y%m%d-%H:%M:%S')"
 MEGA_LOG_FILE="${LOG_DIR}/run_embodiment.log"
 mkdir -p "${LOG_DIR}"
-CMD="python ${SRC_FILE} --config-path ${EMBODIED_PATH}/config/ --config-name ${CONFIG_NAME} runner.logger.log_path=${LOG_DIR}"
-echo ${CMD} > ${MEGA_LOG_FILE}
-${CMD} 2>&1 | tee -a ${MEGA_LOG_FILE}
+CMD=(
+    python "${SRC_FILE}"
+    --config-path "${EMBODIED_PATH}/config/"
+    --config-name "${CONFIG_NAME}"
+    "runner.logger.log_path=${LOG_DIR}"
+    "$@"
+)
+printf 'Command: %q ' "${CMD[@]}" > "${MEGA_LOG_FILE}"
+echo >> "${MEGA_LOG_FILE}"
+"${CMD[@]}" 2>&1 | tee -a "${MEGA_LOG_FILE}"

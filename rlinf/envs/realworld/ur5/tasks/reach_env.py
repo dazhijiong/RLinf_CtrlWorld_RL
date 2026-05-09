@@ -24,6 +24,7 @@ from ..ur5_env import UR5Env, UR5RobotConfig
 class UR5ReachConfig(UR5RobotConfig):
     """Default reach-style task for UR5 realworld integration."""
 
+    task_description: str = "Open the blue book"
     target_ee_pose: np.ndarray = field(
         default_factory=lambda: np.array([0.45, 0.0, 0.20, 3.14, 0.0, 0.0])
     )
@@ -80,4 +81,4 @@ class UR5ReachEnv(UR5Env):
 
     @property
     def task_description(self):
-        return "Open the blue book"
+        return self.config.task_description
