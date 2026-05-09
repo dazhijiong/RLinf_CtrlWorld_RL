@@ -13,7 +13,6 @@ max_steps_per_rollout_epoch: 100
 max_episode_steps: 100
 keyboard_reward_wrapper: single_stage
 use_spacemouse: True
-main_image_key: wrist_1
 
 video_cfg:
   save_video: False
@@ -23,4 +22,3 @@ video_cfg:
 init_params:
   id: "FrankaBinRelocationEnv-v1"
   num_envs: null
-

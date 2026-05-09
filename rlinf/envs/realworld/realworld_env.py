@@ -59,7 +59,6 @@ class RealWorldEnv(gym.Env):
         self.ignore_terminations = cfg.ignore_terminations
         self.num_group = num_envs // cfg.group_size
         self.group_size = cfg.group_size
-        self.main_image_key = cfg.main_image_key
 
         self._init_env()
 
@@ -253,29 +252,19 @@ class RealWorldEnv(gym.Env):
             full_states = np.concatenate(full_states, axis=-1)
         obs["states"] = full_states
 
-        # Process images
-        if self.main_image_key not in raw_obs["frames"]:
-            available_keys = list(raw_obs["frames"].keys())
-            raise KeyError(
-                f"main_image_key '{self.main_image_key}' not found in raw_obs['frames']. "
-                f"Available keys: {available_keys}. "
-                f"Please set 'main_image_key' in your env config to one of the available keys."
-            )
-        obs["main_images"] = raw_obs["frames"][self.main_image_key]
         raw_images = OrderedDict(sorted(raw_obs["frames"].items()))
-        raw_images.pop(self.main_image_key)
-
-        remaining_images = list(raw_images.values())
+        images = list(raw_images.values())
+        if not images:
+            raise ValueError("RealWorldEnv requires at least one camera frame.")
+        obs["main_images"] = images[0]
         obs["wrist_images"] = None
         obs["extra_view_images"] = None
-        if remaining_images:
-            # Keep the first non-main camera as the wrist view so realworld envs
-            # match the common embodied observation contract.
-            obs["wrist_images"] = remaining_images[0]
-        if len(remaining_images) == 2:
-            obs["extra_view_images"] = remaining_images[1]
-        elif len(remaining_images) > 2:
-            obs["extra_view_images"] = np.stack(remaining_images[1:], axis=1)
+        if len(images) > 1:
+            obs["wrist_images"] = images[1]
+        if len(images) > 2:
+            obs["extra_view_images"] = (
+                images[2] if len(images) == 3 else np.stack(images[2:], axis=1)
+            )
 
         obs = to_tensor(obs)
         obs["task_descriptions"] = self.task_descriptions

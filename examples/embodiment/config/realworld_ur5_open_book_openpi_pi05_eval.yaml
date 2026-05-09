@@ -95,7 +95,6 @@ env:
   group_name: "EnvGroup"
   no_gripper: False
   use_spacemouse: False
-  main_image_key: wrist_1
   train:
     total_num_envs: 1
     auto_reset: True
