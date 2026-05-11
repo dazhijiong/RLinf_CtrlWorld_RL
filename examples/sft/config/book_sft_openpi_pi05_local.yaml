@@ -30,7 +30,7 @@ runner:
   resume_dir: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/RLinf/logs/20260501-113914-book_sft_openpi_pi05_local-job6554353/book_sft_openpi_pi05_local_book_new_success/checkpoints/global_step_1400"
 
 data:
-  train_data_paths: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/datasets/book_new_success/lerobot_gello_with_images_filtered"
+  train_data_paths: "/mimer/NOBACKUP/groups/naiss2024-5-164/Hanzhi/datasets/book_new_success/lerobot_gello_with_images_filtered_joint_only"
 
 algorithm:
   adv_type: gae
@@ -44,8 +44,9 @@ actor:
   openpi_data:
     frame_stride: 2
     camera_keys:
-      - "observation.images.d405_1_rgb"
+      - "observation.images.d405_rgb"
       - "observation.images.d435_rgb"
+      - "observation.images.d405_1_rgb"
 
   model:
     precision: null
@@ -56,7 +57,7 @@ actor:
     lora_rank: 16
     openpi:
       config_name: "pi05_book"
-      num_images_in_input: 2
+      num_images_in_input: 3
       add_libero_prompt_prefix: False
       train_expert_only: True
       detach_critic_input: null

@@ -185,7 +185,7 @@ actor:
     openpi:
       config_name: "pi05_book"
       norm_stats_path: ${oc.env:REPO_PATH}/models/pi05_book_sft_step3000_local/lerobot_book/norm_stats.json
-      num_images_in_input: 2
+      num_images_in_input: 3
       add_libero_prompt_prefix: False
       train_expert_only: True
       action_horizon: 10

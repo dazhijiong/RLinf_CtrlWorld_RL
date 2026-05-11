@@ -854,7 +854,7 @@ class EnvWorker(Worker):
                     self.eval_env_list[stage_id].is_start = True
                     extracted_obs, infos = self.eval_env_list[
                         stage_id
-                    ].get_current_obs()
+                    ].reset()
                     env_output = EnvOutput(
                         obs=extracted_obs,
                         final_obs=infos["final_observation"]
